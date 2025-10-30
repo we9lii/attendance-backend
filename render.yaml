@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: attendance-backend
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: node server/index.js
+    autoDeploy: true
+    healthCheckPath: /api/health
+    # Set env vars in Render dashboard (do NOT commit secrets)
+    # DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, DB_SSL
+    # EXTERNAL_API_BASE, AUTH_MODE, API_USERNAME, API_PASSWORD, API_JWT_TOKEN
