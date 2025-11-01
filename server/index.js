@@ -97,7 +97,7 @@ async function initTables() {
       message TEXT NOT NULL,
       target_user_ids TEXT NULL,
       timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      read TINYINT(1) NOT NULL DEFAULT 0
+      is_read TINYINT(1) NOT NULL DEFAULT 0
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
     await conn.query(`CREATE TABLE IF NOT EXISTS chat_messages (
@@ -106,9 +106,17 @@ async function initTables() {
       to_user_id INT NOT NULL,
       message TEXT NOT NULL,
       timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      read TINYINT(1) NOT NULL DEFAULT 0,
+      is_read TINYINT(1) NOT NULL DEFAULT 0,
       INDEX(from_user_id), INDEX(to_user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+
+    // Attempt to migrate old column name `read` to `is_read` if present
+    try {
+      await conn.query('ALTER TABLE notifications CHANGE COLUMN `read` `is_read` TINYINT(1) NOT NULL DEFAULT 0');
+    } catch (e) { /* ignore if column doesn't exist */ }
+    try {
+      await conn.query('ALTER TABLE chat_messages CHANGE COLUMN `read` `is_read` TINYINT(1) NOT NULL DEFAULT 0');
+    } catch (e) { /* ignore if column doesn't exist */ }
   } finally {
     conn.release();
   }
@@ -135,7 +143,8 @@ async function externalFetch(path) {
 
 // Server setup
 const app = express();
-app.use(cors());
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
+app.use(CORS_ORIGIN ? cors({ origin: CORS_ORIGIN }) : cors());
 app.use(express.json());
 
 // Health
@@ -314,7 +323,7 @@ app.get('/api/notifications', async (req, res) => {
   if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
   const { userId, limit } = req.query;
   const lim = Math.max(1, Math.min(100, Number(limit) || 10));
-  let sql = 'SELECT id, title, message, target_user_ids, timestamp, read FROM notifications';
+  let sql = 'SELECT id, title, message, target_user_ids, timestamp, is_read AS `read` FROM notifications';
   let where = '';
   const params = [];
   if (userId) {
@@ -347,7 +356,7 @@ app.post('/api/notifications', requireAuth, async (req, res) => {
     [title, message, csv]
   );
   const id = result.insertId;
-  const [rows] = await pool.query('SELECT id, title, message, target_user_ids, timestamp, read FROM notifications WHERE id = ?', [id]);
+  const [rows] = await pool.query('SELECT id, title, message, target_user_ids, timestamp, is_read AS `read` FROM notifications WHERE id = ?', [id]);
   const r = rows[0];
   res.status(201).json({
     id: r.id,
@@ -363,7 +372,7 @@ app.post('/api/notifications/read', requireAuth, async (req, res) => {
   if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
   const { id } = req.body || {};
   if (!id) return res.status(400).json({ error: 'Missing id' });
-  await pool.query('UPDATE notifications SET read = 1 WHERE id = ?', [Number(id)]);
+  await pool.query('UPDATE notifications SET is_read = 1 WHERE id = ?', [Number(id)]);
   res.json({ ok: true });
 });
 
@@ -380,7 +389,7 @@ function scheduleDailyReminders() {
       try {
         const title = 'تذكير حضور';
         const message = 'تذكير: موعد الحضور يبدأ الساعة 8:00 صباحًا';
-        await pool.query('INSERT INTO notifications (title, message, target_user_ids, read) VALUES (?,?,?,?)', [title, message, null, 0]);
+        await pool.query('INSERT INTO notifications (title, message, target_user_ids, is_read) VALUES (?,?,?,?)', [title, message, null, 0]);
         console.log('Daily attendance reminder notification created');
       } catch (e) {
         console.error('Failed to create daily reminder notification', e);
