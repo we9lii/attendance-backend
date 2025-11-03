@@ -15,6 +15,16 @@ let apiBaseCache: string | null = null;
 
 async function resolveApiBase(): Promise<string> {
   if (apiBaseCache) return apiBaseCache;
+  // استخدم الخادم المحلي تلقائيًا عند التشغيل من localhost
+  try {
+    const w = (typeof window !== 'undefined') ? (window as any) : {};
+    const host = w?.location?.hostname || '';
+    const isLocal = host === 'localhost' || host === '127.0.0.1';
+    if (isLocal) {
+      apiBaseCache = 'http://localhost:5002';
+      return apiBaseCache;
+    }
+  } catch {}
   // Prefer runtime config if available
   try {
     const w = (typeof window !== 'undefined') ? (window as any) : {};
