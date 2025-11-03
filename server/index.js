@@ -9,6 +9,8 @@ import mysql from 'mysql2/promise';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import jwt from 'jsonwebtoken';
+import ZKLib from 'node-zklib';
+import bcrypt from 'bcryptjs';
 
 // Config
 // Prefer platform-provided PORT (Render/Heroku/etc), fallback to SERVER_PORT or 4000
@@ -19,6 +21,7 @@ const API_USERNAME = process.env.API_USERNAME || '';
 const API_PASSWORD = process.env.API_PASSWORD || '';
 const API_JWT_TOKEN = process.env.API_JWT_TOKEN || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+const CONNECTOR_TOKEN = process.env.CONNECTOR_TOKEN || '';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const EMPLOYEE_USERNAME = process.env.EMPLOYEE_USERNAME || 'employee';
@@ -45,6 +48,18 @@ let DB_AVAILABLE = true;
 async function initTables() {
   const conn = await pool.getConnection();
   try {
+    await conn.query(`CREATE TABLE IF NOT EXISTS users (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      username VARCHAR(255) NOT NULL UNIQUE,
+      password_hash VARCHAR(255) NOT NULL,
+      role ENUM('admin','employee') NOT NULL DEFAULT 'employee',
+      department VARCHAR(255) NULL,
+      active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX(role), INDEX(active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+
     await conn.query(`CREATE TABLE IF NOT EXISTS approved_locations (
       id INT AUTO_INCREMENT PRIMARY KEY,
       name VARCHAR(255) NOT NULL,
@@ -144,7 +159,32 @@ async function externalFetch(path) {
 // Server setup
 const app = express();
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
-app.use(CORS_ORIGIN ? cors({ origin: CORS_ORIGIN }) : cors());
+// Support multiple allowed origins via comma-separated list
+const allowedOrigins = CORS_ORIGIN
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+if (allowedOrigins.length === 0) {
+  // Open CORS (development or when not restricting origins)
+  app.use(cors());
+  console.log('CORS: open (no CORS_ORIGIN set)');
+} else if (allowedOrigins.length === 1) {
+  // Single origin
+  app.use(cors({ origin: allowedOrigins[0] }));
+  console.log('CORS: single origin allowed ->', allowedOrigins[0]);
+} else {
+  // Multiple origins
+  const allowedSet = new Set(allowedOrigins);
+  app.use(cors({
+    origin: (origin, callback) => {
+      // Allow non-browser requests (no origin) and those in the allowed list
+      if (!origin || allowedSet.has(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+  }));
+  console.log('CORS: multiple origins allowed ->', Array.from(allowedSet));
+}
 app.use(express.json());
 
 // Health
@@ -170,12 +210,38 @@ function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 }
+function requireAdmin(req, res, next) {
+  try {
+    const token = getAuth(req);
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (decoded?.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    req.user = decoded;
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+}
 
 // Auth routes (env-based admin for MVP; extend to DB users later)
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body || {};
     if (!username || !password) return res.status(400).json({ error: 'Missing username/password' });
+    // Try DB-backed users first
+    try {
+      const conn = await pool.getConnection();
+      try {
+        const [rows] = await conn.query('SELECT id, username, password_hash, role, name FROM users WHERE username = ? AND active = 1', [username]);
+        const user = Array.isArray(rows) ? rows[0] : null;
+        if (user && await bcrypt.compare(String(password), String(user.password_hash))) {
+          const token = signToken({ id: user.id, username: user.username, role: user.role, name: user.name });
+          return res.json({ token, user: { id: user.id, name: user.name, username: user.username, role: user.role } });
+        }
+      } finally { conn.release(); }
+    } catch (e) {
+      // DB unavailable or query failed; fall back to env-based accounts below
+    }
     if (String(username) === ADMIN_USERNAME && String(password) === ADMIN_PASSWORD) {
       const token = signToken({ username, role: 'admin' });
       return res.json({ token, user: { username, role: 'admin' } });
@@ -197,6 +263,70 @@ app.get('/api/me', requireAuth, (req, res) => {
 app.post('/api/logout', (req, res) => {
   // Client should discard token; nothing to do server-side for stateless JWT
   res.json({ ok: true });
+});
+
+// Local users management
+app.get('/api/users', requireAuth, async (req, res) => {
+  try {
+    const conn = await pool.getConnection();
+    try {
+      const [rows] = await conn.query('SELECT id, name, username, role, department, active FROM users ORDER BY id ASC');
+      res.json(rows);
+    } finally { conn.release(); }
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+app.post('/api/users', requireAdmin, async (req, res) => {
+  try {
+    const { name, username, password, role, department } = req.body || {};
+    if (!name || !username || !password) return res.status(400).json({ error: 'Missing name/username/password' });
+    const r = String(role || 'employee');
+    if (!['admin','employee'].includes(r)) return res.status(400).json({ error: 'Invalid role' });
+    const hash = await bcrypt.hash(String(password), 10);
+    const conn = await pool.getConnection();
+    try {
+      await conn.query('INSERT INTO users (name, username, password_hash, role, department) VALUES (?, ?, ?, ?, ?)', [name, username, hash, r, department || null]);
+      const [rows] = await conn.query('SELECT id, name, username, role, department, active FROM users WHERE username = ?', [username]);
+      const user = Array.isArray(rows) ? rows[0] : null;
+      res.json(user || { ok: true });
+    } finally { conn.release(); }
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+app.put('/api/users/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { name, department, role, active, password } = req.body || {};
+    const conn = await pool.getConnection();
+    try {
+      if (password) {
+        const hash = await bcrypt.hash(String(password), 10);
+        await conn.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, id]);
+      }
+      const fields = [];
+      const values = [];
+      if (name !== undefined) { fields.push('name = ?'); values.push(name); }
+      if (department !== undefined) { fields.push('department = ?'); values.push(department); }
+      if (role !== undefined && ['admin','employee'].includes(String(role))) { fields.push('role = ?'); values.push(String(role)); }
+      if (active !== undefined) { fields.push('active = ?'); values.push(Number(!!active)); }
+      if (fields.length) {
+        await conn.query(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, [...values, id]);
+      }
+      const [rows] = await conn.query('SELECT id, name, username, role, department, active FROM users WHERE id = ?', [id]);
+      res.json(Array.isArray(rows) ? rows[0] : { ok: true });
+    } finally { conn.release(); }
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+});
+
+app.delete('/api/users/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const conn = await pool.getConnection();
+    try {
+      await conn.query('DELETE FROM users WHERE id = ?', [id]);
+      res.json({ ok: true });
+    } finally { conn.release(); }
+  } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
 });
 
 // Proxy endpoints to external system (employees/departments/areas/positions)
@@ -248,6 +378,98 @@ app.post('/api/test-fingerprint', async (req, res) => {
     res.json({ ok, status, preview: text.slice(0, 200) });
   } catch (e) {
     res.status(502).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+// Fetch users directly from a ZKTeco device (no DB required)
+// You can provide connection params in body or rely on env vars: ZK_HOST, ZK_PORT, ZK_INPORT, ZK_TIMEOUT_MS, ZK_PASSWORD
+app.post('/api/device-users', async (req, res) => {
+  try {
+    const { host, port, inport, timeout, password } = req.body || {};
+    const h = String(host || process.env.ZK_HOST || '');
+    const p = Number(port || process.env.ZK_PORT || 4370);
+    const ip = Number(inport || process.env.ZK_INPORT || 5200);
+    const to = Number(timeout || process.env.ZK_TIMEOUT_MS || 5000);
+    const commPassword = password ? Number(password) : (process.env.ZK_PASSWORD ? Number(process.env.ZK_PASSWORD) : undefined);
+    if (!h) return res.status(400).json({ error: 'Missing ZK device host (host or ZK_HOST)' });
+
+    const zk = new ZKLib(h, p, ip, to, commPassword);
+    await zk.createSocket();
+    const users = await zk.getUsers();
+    try { if (zk?.close) await zk.close(); } catch {}
+
+    const mapped = Array.isArray(users) ? users.map(u => ({
+      id: Number(u?.uid ?? u?.userId ?? u?.userid ?? 0),
+      name: String(u?.name ?? u?.username ?? 'مستخدم'),
+      department: String(u?.department ?? 'غير محدد'),
+    })).filter(u => u.id) : [];
+    res.json(mapped);
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e) });
+  }
+});
+
+// Test connectivity to a ZKTeco device (quick ping via users or attendances)
+// Accepts same params as /api/device-users; returns device reachability and counts
+app.post('/api/device-test', async (req, res) => {
+  try {
+    const { host, port, inport, timeout, password } = req.body || {};
+    const h = String(host || process.env.ZK_HOST || '');
+    const p = Number(port || process.env.ZK_PORT || 4370);
+    const ip = Number(inport || process.env.ZK_INPORT || 5200);
+    const to = Number(timeout || process.env.ZK_TIMEOUT_MS || 5000);
+    const commPassword = password ? Number(password) : (process.env.ZK_PASSWORD ? Number(process.env.ZK_PASSWORD) : undefined);
+    if (!h) return res.status(400).json({ error: 'Missing ZK device host (host or ZK_HOST)' });
+
+    const zk = new ZKLib(h, p, ip, to, commPassword);
+    await zk.createSocket();
+    let usersCount = null;
+    let attendancesCount = null;
+    try {
+      const users = await zk.getUsers();
+      usersCount = Array.isArray(users) ? users.length : null;
+    } catch {}
+    try {
+      const logs = await zk.getAttendances();
+      attendancesCount = Array.isArray(logs) ? logs.length : null;
+    } catch {}
+    try { if (zk?.close) await zk.close(); } catch {}
+    res.json({ ok: true, host: h, port: p, inport: ip, timeout: to, usersCount, attendancesCount });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+// Fetch attendance logs directly from ZKTeco device (optional DB save in future)
+// This endpoint connects to device and returns simplified logs without requiring DB
+app.post('/api/device-attendances', async (req, res) => {
+  try {
+    const { host, port, inport, timeout, password } = req.body || {};
+    const h = String(host || process.env.ZK_HOST || '');
+    const p = Number(port || process.env.ZK_PORT || 4370);
+    const ip = Number(inport || process.env.ZK_INPORT || 5200);
+    const to = Number(timeout || process.env.ZK_TIMEOUT_MS || 5000);
+    const commPassword = password ? Number(password) : (process.env.ZK_PASSWORD ? Number(process.env.ZK_PASSWORD) : undefined);
+    if (!h) return res.status(400).json({ error: 'Missing ZK device host (host or ZK_HOST)' });
+
+    const zk = new ZKLib(h, p, ip, to, commPassword);
+    await zk.createSocket();
+    const logs = await zk.getAttendances();
+    try { if (zk?.close) await zk.close(); } catch {}
+
+    const mapped = Array.isArray(logs) ? logs.map(l => {
+      const userId = Number(l?.uid ?? l?.userId ?? l?.userid ?? 0);
+      const tsRaw = l?.attendanceTime ?? l?.timestamp ?? l?.time ?? l?.record?.timestamp;
+      const ts = tsRaw ? new Date(tsRaw) : new Date();
+      return {
+        userId,
+        timestamp: ts.toISOString(),
+        raw: l,
+      };
+    }).filter(x => x.userId) : [];
+    res.json({ count: mapped.length, logs: mapped });
+  } catch (e) {
+    res.status(502).json({ error: String(e.message || e) });
   }
 });
 
@@ -374,6 +596,68 @@ app.post('/api/notifications/read', requireAuth, async (req, res) => {
   if (!id) return res.status(400).json({ error: 'Missing id' });
   await pool.query('UPDATE notifications SET is_read = 1 WHERE id = ?', [Number(id)]);
   res.json({ ok: true });
+});
+
+// Receive attendance logs pushed from an in-LAN connector
+// Security: require a shared bearer token via CONNECTOR_TOKEN
+app.post('/api/device-push-logs', async (req, res) => {
+  if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+  try {
+    const hdr = String(req.headers['authorization'] || '');
+    const m = /^Bearer\s+(.+)$/i.exec(hdr);
+    const token = m ? m[1] : '';
+    if (!CONNECTOR_TOKEN || token !== CONNECTOR_TOKEN) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const logs = Array.isArray(req.body?.logs) ? req.body.logs : [];
+    if (!logs.length) return res.status(400).json({ error: 'Missing logs array' });
+
+    let inserted = 0;
+    let updated = 0;
+    for (const log of logs) {
+      try {
+        const userId = Number(log?.uid ?? log?.userId ?? log?.userid ?? log?.user?.uid);
+        const tsRaw = log?.attendanceTime ?? log?.timestamp ?? log?.time ?? log?.record?.timestamp;
+        if (!userId || !tsRaw) continue;
+        const ts = new Date(tsRaw);
+
+        const day = new Date(ts.getFullYear(), ts.getMonth(), ts.getDate(), 0, 0, 0);
+        const [lh, lm] = String(process.env.LATE_THRESHOLD || '08:15').split(':').map(n => Number(n));
+        const lateThreshold = new Date(ts.getFullYear(), ts.getMonth(), ts.getDate(), lh || 8, lm || 15, 0);
+
+        // find existing record for this user/day
+        const [rows] = await pool.query(
+          'SELECT id, check_in, check_out FROM attendance_logs WHERE user_id=? AND DATE(check_in)=DATE(?) ORDER BY check_in ASC LIMIT 1',
+          [userId, ts]
+        );
+
+        if (Array.isArray(rows) && rows.length > 0) {
+          const rec = rows[0];
+          const checkIn = new Date(rec.check_in);
+          if (!rec.check_out && ts > checkIn) {
+            await pool.query('UPDATE attendance_logs SET check_out=? WHERE id=?', [ts, rec.id]);
+            updated++;
+          }
+        } else {
+          const isLate = ts > lateThreshold;
+          const lateMinutes = isLate ? Math.round((ts.getTime() - lateThreshold.getTime()) / 60000) : 0;
+          await pool.query(
+            `INSERT INTO attendance_logs (user_id, check_in, is_late, late_minutes, source)
+             VALUES (?,?,?,?,?)`,
+            [userId, ts, isLate ? 1 : 0, lateMinutes, 'جهاز البصمة']
+          );
+          inserted++;
+        }
+      } catch (err) {
+        // continue on per-log errors
+      }
+    }
+
+    res.json({ ok: true, inserted, updated });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
 });
 
 // Daily reminder at 07:50 for all employees

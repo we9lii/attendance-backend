@@ -6,6 +6,12 @@ services:
     startCommand: node server/index.js
     autoDeploy: true
     healthCheckPath: /api/health
-    # Set env vars in Render dashboard (do NOT commit secrets)
-    # DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, DB_SSL
-    # EXTERNAL_API_BASE, AUTH_MODE, API_USERNAME, API_PASSWORD, API_JWT_TOKEN
+    # Environment variables (safe defaults only; set secrets in Render dashboard)
+    envVars:
+      - key: CORS_ORIGIN
+        value: "http://qcheck.qssun.solar,https://qcheck.qssun.solar"
+      - key: DB_SSL
+        value: "true"
+      # The following should be set in Render dashboard (do NOT commit secrets):
+      # DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+      # EXTERNAL_API_BASE, AUTH_MODE, API_USERNAME, API_PASSWORD, API_JWT_TOKEN, JWT_SECRET
