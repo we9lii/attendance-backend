@@ -20,7 +20,8 @@ async function resolveApiBase(): Promise<string> {
     const w = (typeof window !== 'undefined') ? (window as any) : {};
     const host = w?.location?.hostname || '';
     const isLocal = host === 'localhost' || host === '127.0.0.1';
-    if (isLocal) {
+    const isLan = /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
+    if (isLocal || isLan) {
       apiBaseCache = 'http://localhost:5002';
       return apiBaseCache;
     }
