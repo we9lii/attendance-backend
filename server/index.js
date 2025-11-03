@@ -10,7 +10,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import jwt from 'jsonwebtoken';
 import ZKLib from 'node-zklib';
-import bcrypt from 'bcryptjs';
+let bcrypt;
+try {
+  const mod = await import('bcryptjs');
+  bcrypt = mod.default || mod;
+  console.log('Crypto: bcryptjs loaded');
+} catch (e) {
+  bcrypt = null;
+  console.warn('Crypto: bcryptjs not installed; DB-backed login disabled.');
+}
 
 // Config
 // Prefer platform-provided PORT (Render/Heroku/etc), fallback to SERVER_PORT or 4000
@@ -234,7 +242,7 @@ app.post('/api/login', async (req, res) => {
       try {
         const [rows] = await conn.query('SELECT id, username, password_hash, role, name FROM users WHERE username = ? AND active = 1', [username]);
         const user = Array.isArray(rows) ? rows[0] : null;
-        if (user && await bcrypt.compare(String(password), String(user.password_hash))) {
+        if (bcrypt && user && await bcrypt.compare(String(password), String(user.password_hash))) {
           const token = signToken({ id: user.id, username: user.username, role: user.role, name: user.name });
           return res.json({ token, user: { id: user.id, name: user.name, username: user.username, role: user.role } });
         }
@@ -282,6 +290,7 @@ app.post('/api/users', requireAdmin, async (req, res) => {
     if (!name || !username || !password) return res.status(400).json({ error: 'Missing name/username/password' });
     const r = String(role || 'employee');
     if (!['admin','employee'].includes(r)) return res.status(400).json({ error: 'Invalid role' });
+    if (!bcrypt) return res.status(503).json({ error: 'Password hashing unavailable (bcryptjs not installed)' });
     const hash = await bcrypt.hash(String(password), 10);
     const conn = await pool.getConnection();
     try {
@@ -300,6 +309,7 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
     const conn = await pool.getConnection();
     try {
       if (password) {
+        if (!bcrypt) { conn.release(); return res.status(503).json({ error: 'Password hashing unavailable (bcryptjs not installed)' }); }
         const hash = await bcrypt.hash(String(password), 10);
         await conn.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, id]);
       }
