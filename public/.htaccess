@@ -1,4 +1,11 @@
 Options -Indexes
+<IfModule mod_headers.c>
+  <Files "config.json">
+    Header set Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+    Header set Pragma "no-cache"
+    Header unset ETag
+  </Files>
+</IfModule>
 RewriteEngine On
 RewriteBase /
 RewriteCond %{REQUEST_FILENAME} !-f

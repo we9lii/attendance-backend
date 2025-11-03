@@ -308,6 +308,23 @@ const I18N: Record<Lang, Record<string, string>> = {
     connectionFailed: 'تعذر الاتصال',
     connectionTestFailed: 'فشل اختبار الاتصال. تحقق من الشبكة/الخادم.',
     fingerprintWarning: '⚠️ تُستخدم بيانات الدخول فقط لجلب قائمة الموظفين الأولية — لا تُخزّن في النظام بعد المزامنة.',
+    // Settings - users management
+    usersManagementTitle: 'إدارة المستخدمين',
+    createAdminTitle: 'إنشاء حساب إداري جديد',
+    createEmployeeTitle: 'إنشاء حساب موظف جديد',
+    nameLabelGeneric: 'الاسم',
+    usernameLabelGeneric: 'اسم المستخدم',
+    passwordLabelGeneric: 'كلمة المرور',
+    departmentLabelGeneric: 'القسم (اختياري)',
+    createAccountAction: 'إنشاء الحساب',
+    usersTableTitle: 'قائمة المستخدمين',
+    roleColGeneric: 'الدور',
+    departmentColGeneric: 'القسم',
+    createdAtColGeneric: 'تاريخ الإنشاء',
+    accountCreatedToast: 'تم إنشاء الحساب بنجاح',
+    accountSaveFailedToast: 'تعذر إنشاء الحساب. تحقق من الخادم.',
+    userDeletedToast: 'تم حذف المستخدم',
+    userDeleteFailedToast: 'فشل حذف المستخدم. تحقق من الخادم.',
   },
   en: {
     companyLogoAlt: 'Future Cities Energy logo',
@@ -573,6 +590,23 @@ const I18N: Record<Lang, Record<string, string>> = {
     connectionFailed: 'Connection failed',
     connectionTestFailed: 'Connection test failed. Check network/server.',
     fingerprintWarning: '⚠️ Credentials are used only to fetch the initial employees list — not stored after syncing.',
+    // Settings - users management
+    usersManagementTitle: 'User Management',
+    createAdminTitle: 'Create New Admin Account',
+    createEmployeeTitle: 'Create New Employee Account',
+    nameLabelGeneric: 'Name',
+    usernameLabelGeneric: 'Username',
+    passwordLabelGeneric: 'Password',
+    departmentLabelGeneric: 'Department (optional)',
+    createAccountAction: 'Create Account',
+    usersTableTitle: 'Users List',
+    roleColGeneric: 'Role',
+    departmentColGeneric: 'Department',
+    createdAtColGeneric: 'Created At',
+    accountCreatedToast: 'Account created successfully',
+    accountSaveFailedToast: 'Failed to create account. Check the server.',
+    userDeletedToast: 'User deleted',
+    userDeleteFailedToast: 'Failed to delete user. Check the server.',
   },
 };
 
@@ -966,14 +1000,14 @@ export default function App() {
       ];
 
       try {
-        let employeesRes: any = null;
+        let usersRes: any = null;
         let locationsRes: any = null;
 
         try {
-          employeesRes = await api.get('/employees');
+          usersRes = await api.get('/users');
         } catch (e) {
           // حوّل بيانات وهمية لصيغة الموظفين الخارجية المتوقعة
-          employeesRes = sampleUsers.map(u => ({ id: u.id, name: u.name, department: u.department }));
+          usersRes = sampleUsers.map(u => ({ id: u.id, name: u.name, role: (u.role === UserRole.ADMIN ? 'admin' : 'employee'), department: u.department }));
         }
         try {
           locationsRes = await api.get('/approved-locations');
@@ -981,12 +1015,12 @@ export default function App() {
           locationsRes = sampleLocations;
         }
 
-        // تحويل الموظفين إلى الصيغة الداخلية
-        const employees: User[] = (Array.isArray(employeesRes) ? employeesRes : employeesRes?.results || employeesRes || []).map((e: any) => ({
-          id: Number(e.id ?? e.pk ?? e.employee_id ?? Date.now()),
-          name: String(e.name || e.full_name || e.username || 'موظف'),
-          role: UserRole.EMPLOYEE,
-          department: String(e.department?.name || e.department || 'غير محدد'),
+        // تحويل المستخدمين إلى الصيغة الداخلية
+        const employees: User[] = (Array.isArray(usersRes) ? usersRes : usersRes?.results || usersRes || []).map((e: any) => ({
+          id: Number(e.id ?? Date.now()),
+          name: String(e.name || 'موظف'),
+          role: String(e.role).toLowerCase() === 'admin' ? UserRole.ADMIN : UserRole.EMPLOYEE,
+          department: String(e.department || 'غير محدد'),
         }));
 
         // إذا كانت القائمة فارغة، استخدم البيانات الوهمية مع إداري فيصل
@@ -1069,6 +1103,21 @@ export default function App() {
     fetchData();
   }, []);
 
+  // عند تغيّر حالة المصادقة أو قائمة المستخدمين، أعِد اختيار المستخدم الحالي وفق الدور المخزّن
+  useEffect(() => {
+    if (!authPresent || !users.length) return;
+    let desiredRole: UserRole | null = null;
+    try {
+      const r = (localStorage.getItem('authRole') || '').toLowerCase();
+      if (r === 'admin') desiredRole = UserRole.ADMIN;
+      else if (r === 'employee') desiredRole = UserRole.EMPLOYEE;
+    } catch {}
+    const nextUser = (desiredRole ? users.find(u => u.role === desiredRole) : users.find(u => u.role === UserRole.EMPLOYEE))
+      || users.find(u => u.role === UserRole.ADMIN)
+      || null;
+    setCurrentUser(nextUser);
+  }, [authPresent, users]);
+
   const toggleTheme = () => {
     setTheme(prev => {
       const newTheme = prev === 'light' ? 'dark' : 'light';
@@ -1136,6 +1185,7 @@ export default function App() {
     ) : (
       <AdminDashboard 
         users={users} 
+        setUsers={setUsers}
         attendance={attendance} 
         requests={requests} 
         setRequests={setRequests}
@@ -1718,6 +1768,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
 
 interface AdminDashboardProps {
     users: User[];
+    setUsers: React.Dispatch<React.SetStateAction<User[]>>;
     attendance: AttendanceRecord[];
     requests: Request[];
     setRequests: React.Dispatch<React.SetStateAction<Request[]>>;
@@ -1779,7 +1830,7 @@ const HeatmapCalendar: React.FC<{ absenceData: Map<string, number>; lang: Lang }
 };
 
 const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
-    const { users, attendance, requests, setRequests, locations, setLocations, notifications, setNotifications, chatMessages, setChatMessages, showToast, currentUser, setCurrentUser, settings, saveSettings, lang } = props;
+    const { users, setUsers, attendance, requests, setRequests, locations, setLocations, notifications, setNotifications, chatMessages, setChatMessages, showToast, currentUser, setCurrentUser, settings, saveSettings, lang } = props;
     const t = useI18n(lang);
     const locale = lang === 'ar' ? 'ar-EG' : 'en-US';
     const [activeTab, setActiveTab] = useState('summary');
@@ -1828,6 +1879,28 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
     const [collapseNotifications, setCollapseNotifications] = useState(false);
     const [collapseReports, setCollapseReports] = useState(false);
     const [collapseFingerprint, setCollapseFingerprint] = useState(false);
+    const [collapseUsers, setCollapseUsers] = useState(false);
+
+    // New user forms
+    const [newAdminName, setNewAdminName] = useState('');
+    const [newAdminUsername, setNewAdminUsername] = useState('');
+    const [newAdminPassword, setNewAdminPassword] = useState('');
+    const [newAdminDepartment, setNewAdminDepartment] = useState('');
+    const [newEmpName, setNewEmpName] = useState('');
+    const [newEmpUsername, setNewEmpUsername] = useState('');
+    const [newEmpPassword, setNewEmpPassword] = useState('');
+    const [newEmpDepartment, setNewEmpDepartment] = useState('');
+
+    const createUser = async (role: 'admin'|'employee', payload: { name: string; username: string; password: string; department?: string; }) => {
+      try {
+        const res = await api.post('/users', { ...payload, role });
+        const mapped = { id: res.id, name: res.name, role: (res.role === 'admin' ? UserRole.ADMIN : UserRole.EMPLOYEE), department: res.department || '' } as User;
+        setUsers(prev => [...prev, mapped]);
+        showToast(t('accountCreatedToast'), 'success');
+      } catch {
+        showToast(t('accountSaveFailedToast'), 'error');
+      }
+    };
 
     // Chat sessions state
     const [chatSessions, setChatSessions] = useState<{ id: number; employeeId: number; isOpen: boolean; createdAt: string; closedAt?: string; }[]>([]);
@@ -3152,6 +3225,99 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                  )}
                  {activeTab === 'settings' && (
                      <div className="space-y-6 animate-fade-in">
+                     {/* Users Management */}
+                     <div className="bg-white/70 dark:bg-gray-800/70 backdrop-blur p-6 rounded-xl shadow-md ring-1 ring-gray-200/60 dark:ring-gray-700/60">
+                       <div className="flex items-center justify-between mb-4">
+                         <h2 className="text-2xl font-bold">{t('usersManagementTitle')}</h2>
+                         <button onClick={()=>setCollapseUsers(v=>!v)} aria-label={t('collapseSection')} className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">
+                           <svg className={`w-5 h-5 transition-transform ${collapseUsers ? 'rotate-180' : 'rotate-0'}`} viewBox="0 0 20 20" fill="currentColor"><path d="M5 7l5 5 5-5H5z"/></svg>
+                         </button>
+                       </div>
+                       <div className="h-0.5 bg-gradient-to-r from-violet-400 to-fuchsia-400 rounded-full mb-4" />
+                       {!collapseUsers && (
+                         <>
+                           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                             <div className="p-4 rounded-xl ring-1 ring-gray-200/60 dark:ring-gray-700/60 bg-white/60 dark:bg-gray-800/60">
+                               <h3 className="text-lg font-semibold mb-3">{t('createAdminTitle')}</h3>
+                               <div className="space-y-3">
+                                 <div>
+                                   <label className="block text-sm mb-1">{t('nameLabelGeneric')}</label>
+                                   <input value={newAdminName} onChange={e=>setNewAdminName(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                 </div>
+                                 <div>
+                                   <label className="block text-sm mb-1">{t('usernameLabelGeneric')}</label>
+                                   <input value={newAdminUsername} onChange={e=>setNewAdminUsername(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                 </div>
+                                 <div>
+                                   <label className="block text-sm mb-1">{t('passwordLabelGeneric')}</label>
+                                   <input type="password" value={newAdminPassword} onChange={e=>setNewAdminPassword(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                 </div>
+                                 <div>
+                                   <label className="block text-sm mb-1">{t('departmentLabelGeneric')}</label>
+                                   <input value={newAdminDepartment} onChange={e=>setNewAdminDepartment(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                 </div>
+                               </div>
+                               <div className="mt-4 flex justify-end">
+                                 <button onClick={async()=>{ if (!newAdminName.trim() || !newAdminUsername.trim() || !newAdminPassword.trim()) return; await createUser('admin', { name: newAdminName, username: newAdminUsername, password: newAdminPassword, department: newAdminDepartment }); setNewAdminName(''); setNewAdminUsername(''); setNewAdminPassword(''); setNewAdminDepartment(''); }} className="px-4 py-2 rounded-md bg-gradient-to-r from-emerald-600 to-teal-500 text-white hover:from-emerald-700 hover:to-teal-600">{t('createAccountAction')}</button>
+                               </div>
+                             </div>
+
+                             <div className="p-4 rounded-xl ring-1 ring-gray-200/60 dark:ring-gray-700/60 bg-white/60 dark:bg-gray-800/60">
+                               <h3 className="text-lg font-semibold mb-3">{t('createEmployeeTitle')}</h3>
+                               <div className="space-y-3">
+                                 <div>
+                                   <label className="block text-sm mb-1">{t('nameLabelGeneric')}</label>
+                                   <input value={newEmpName} onChange={e=>setNewEmpName(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                 </div>
+                                 <div>
+                                   <label className="block text-sm mb-1">{t('usernameLabelGeneric')}</label>
+                                   <input value={newEmpUsername} onChange={e=>setNewEmpUsername(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                 </div>
+                                 <div>
+                                   <label className="block text-sm mb-1">{t('passwordLabelGeneric')}</label>
+                                   <input type="password" value={newEmpPassword} onChange={e=>setNewEmpPassword(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                 </div>
+                                 <div>
+                                   <label className="block text-sm mb-1">{t('departmentLabelGeneric')}</label>
+                                   <input value={newEmpDepartment} onChange={e=>setNewEmpDepartment(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                 </div>
+                               </div>
+                               <div className="mt-4 flex justify-end">
+                                 <button onClick={async()=>{ if (!newEmpName.trim() || !newEmpUsername.trim() || !newEmpPassword.trim()) return; await createUser('employee', { name: newEmpName, username: newEmpUsername, password: newEmpPassword, department: newEmpDepartment }); setNewEmpName(''); setNewEmpUsername(''); setNewEmpPassword(''); setNewEmpDepartment(''); }} className="px-4 py-2 rounded-md bg-gradient-to-r from-indigo-600 to-blue-500 text-white hover:from-indigo-700 hover:to-blue-600">{t('createAccountAction')}</button>
+                               </div>
+                             </div>
+                           </div>
+
+                           <div className="mt-6">
+                             <h3 className="text-lg font-semibold mb-3">{t('usersTableTitle')}</h3>
+                             <table className="w-full text-sm">
+                               <thead className="text-xs text-gray-800 dark:text-gray-100 bg-gradient-to-r from-violet-50 via-fuchsia-50 to-pink-50 dark:from-violet-900/50 dark:via-fuchsia-900/50 dark:to-pink-900/50">
+                                 <tr>
+                                   <th className="px-3 py-2">{t('nameCol')}</th>
+                                   <th className="px-3 py-2">{t('roleColGeneric')}</th>
+                                   <th className="px-3 py-2">{t('departmentColGeneric')}</th>
+                                   <th className="px-3 py-2">{t('createdAtColGeneric')}</th>
+                                   <th className="px-3 py-2">{t('actionsCol')}</th>
+                                 </tr>
+                               </thead>
+                               <tbody>
+                                 {users.map(u => (
+                                   <tr key={u.id} className="border-b border-gray-100 dark:border-gray-700">
+                                     <td className="px-3 py-2">{u.name}</td>
+                                     <td className="px-3 py-2">{u.role === UserRole.ADMIN ? t('admin') : t('employee')}</td>
+                                     <td className="px-3 py-2">{u.department || '—'}</td>
+                                     <td className="px-3 py-2">{'—'}</td>
+                                     <td className="px-3 py-2 flex gap-2">
+                                       <button onClick={async()=>{ try { await api.delete(`/users/${u.id}`); setUsers(prev => prev.filter(x => x.id !== u.id)); showToast(t('userDeletedToast'), 'success'); } catch { showToast(t('userDeleteFailedToast'), 'error'); } }} className="px-3 py-1 rounded-md bg-gradient-to-r from-rose-600 to-pink-500 text-white hover:from-rose-700 hover:to-pink-600">{t('delete')}</button>
+                                     </td>
+                                   </tr>
+                                 ))}
+                               </tbody>
+                             </table>
+                           </div>
+                         </>
+                       )}
+                     </div>
                       {/* Basic Attendance Settings */}
                       <div className="bg-white/70 dark:bg-gray-800/70 backdrop-blur p-6 rounded-xl shadow-md ring-1 ring-gray-200/60 dark:ring-gray-700/60">
                         <div className="flex items-center justify-between mb-4">
