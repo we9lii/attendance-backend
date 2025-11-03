@@ -30,8 +30,9 @@ const API_PASSWORD = process.env.API_PASSWORD || '';
 const API_JWT_TOKEN = process.env.API_JWT_TOKEN || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 const CONNECTOR_TOKEN = process.env.CONNECTOR_TOKEN || '';
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+// Default env-based admin (for immediate access). Override via Render env.
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || '1';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '1';
 const EMPLOYEE_USERNAME = process.env.EMPLOYEE_USERNAME || 'employee';
 const EMPLOYEE_PASSWORD = process.env.EMPLOYEE_PASSWORD || '';
 
