@@ -237,6 +237,8 @@ function requireAdmin(req, res, next) {
 }
 
 // Auth routes (env-based admin for MVP; extend to DB users later)
+// مثال للطلب (Body) لتسجيل الدخول بسرعة بالحساب الوهمي 1/1:
+// Body: { "username": "1", "password": "1" }
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body || {};
