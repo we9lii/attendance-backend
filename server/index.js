@@ -166,32 +166,33 @@ async function externalFetch(path) {
 
 // Server setup
 const app = express();
-const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
-// Support multiple allowed origins via comma-separated list
-const allowedOrigins = CORS_ORIGIN
+// Configure CORS safely
+const rawCorsOrigin = process.env.CORS_ORIGIN || '';
+const allowedOrigins = rawCorsOrigin
   .split(',')
   .map(o => o.trim())
-  .filter(Boolean);
+  .filter(o => o.length > 0);
 
 if (allowedOrigins.length === 0) {
-  // Open CORS (development or when not restricting origins)
+  // Open CORS (for development or unrestricted mode)
   app.use(cors());
-  console.log('CORS: open (no CORS_ORIGIN set)');
-} else if (allowedOrigins.length === 1) {
-  // Single origin
-  app.use(cors({ origin: allowedOrigins[0] }));
-  console.log('CORS: single origin allowed ->', allowedOrigins[0]);
+  console.log('CORS: open (CORS_ORIGIN not set or empty)');
 } else {
-  // Multiple origins
+  // Use dynamic origin function to handle multiple origins safely
   const allowedSet = new Set(allowedOrigins);
   app.use(cors({
     origin: (origin, callback) => {
-      // Allow non-browser requests (no origin) and those in the allowed list
-      if (!origin || allowedSet.has(origin)) return callback(null, true);
+      // Allow requests with no origin (like mobile apps, curl, Postman)
+      if (!origin) return callback(null, true);
+      // Check if the origin is in the allowed list
+      if (allowedSet.has(origin)) {
+        return callback(null, true);
+      }
       return callback(new Error('Not allowed by CORS'));
     },
+    credentials: true
   }));
-  console.log('CORS: multiple origins allowed ->', Array.from(allowedSet));
+  console.log('CORS: restricted to origins ->', Array.from(allowedSet));
 }
 app.use(express.json());
 
