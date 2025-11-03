@@ -2,7 +2,7 @@ services:
   - type: web
     name: attendance-backend
     env: node
-    buildCommand: npm ci
+    buildCommand: npm ci && npm run build
     startCommand: node server/index.js
     autoDeploy: true
     healthCheckPath: /api/health
@@ -14,6 +14,8 @@ services:
         value: "true"
       - key: NODE_VERSION
         value: "20"
+      - key: NPM_CONFIG_PRODUCTION
+        value: "false"
       # The following should be set in Render dashboard (do NOT commit secrets):
       # DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
       # EXTERNAL_API_BASE, AUTH_MODE, API_USERNAME, API_PASSWORD, API_JWT_TOKEN, JWT_SECRET
