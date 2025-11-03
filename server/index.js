@@ -171,6 +171,7 @@ const rawCorsOrigin = process.env.CORS_ORIGIN || '';
 const allowedOrigins = rawCorsOrigin
   .split(',')
   .map(o => o.trim())
+  .map(o => o.replace(/\/+$/, ''))
   .filter(o => o.length > 0);
 
 if (allowedOrigins.length === 0) {
@@ -184,10 +185,12 @@ if (allowedOrigins.length === 0) {
     origin: (origin, callback) => {
       // Allow requests with no origin (like mobile apps, curl, Postman)
       if (!origin) return callback(null, true);
-      // Check if the origin is in the allowed list
-      if (allowedSet.has(origin)) {
+      // Normalize origin by removing trailing slashes before checking
+      const normalized = origin.replace(/\/+$/, '');
+      if (allowedSet.has(normalized)) {
         return callback(null, true);
       }
+      console.warn('CORS blocked origin:', origin);
       return callback(new Error('Not allowed by CORS'));
     },
     credentials: true
