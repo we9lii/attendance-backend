@@ -27,11 +27,20 @@ jobs:
       - name: Sync Capacitor Android
         run: npx cap sync android
 
+      - name: Setup Java JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           api-level: 33
           build-tools: 33.0.2
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
 
       - name: Build Debug APK
         working-directory: android
