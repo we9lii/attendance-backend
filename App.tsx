@@ -122,6 +122,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     notInAnyLocation: 'أنت لست في نطاق أي موقع عمل مسجل.',
     enableLocationPermission: 'يرجى تفعيل صلاحية الوصول للموقع في المتصفح.',
     locationError: 'حدث خطأ أثناء الحصول على الموقع.',
+    allowLocation: 'السماح باستخدام الموقع',
     latenessOrdinal: 'هذا هو تأخيرك رقم {n} هذا الشهر.',
     mandatoryExcuseRequiredTitle: 'سبب إلزامي للتأخير',
     mandatoryExcuseRequiredBody: 'لقد تجاوزت الحد المسموح به للتأخير هذا الشهر. يرجى إدخال سبب التأخير للمتابعة.',
@@ -404,6 +405,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     notInAnyLocation: 'You are not within any registered work location.',
     enableLocationPermission: 'Please enable location permission in the browser.',
     locationError: 'An error occurred while obtaining location.',
+    allowLocation: 'Allow Location Access',
     latenessOrdinal: 'This is your {n}th lateness this month.',
     mandatoryExcuseRequiredTitle: 'Mandatory excuse required',
     mandatoryExcuseRequiredBody: 'You exceeded the allowed lateness this month. Please provide an excuse to continue.',
@@ -888,6 +890,7 @@ const GeneralNotificationForm: React.FC<{ onSent: (n: Notification) => void }> =
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [lang, setLang] = useState<Lang>(() => (localStorage.getItem('lang') as Lang) || 'ar');
+  const t = useI18n(lang);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -948,6 +951,71 @@ export default function App() {
     setToast({ message, type });
   };
 
+  // تفاصيل الملخص التنفيذي (بيانات مباشرة من القاعدة)
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailType, setDetailType] = useState<'PRESENT'|'LATE'|'ABSENT'|'NONE'>('NONE');
+  const [detailDateIso, setDetailDateIso] = useState<string>(() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${dd}`;
+  });
+  const [detailRecords, setDetailRecords] = useState<AttendanceRecord[]>([]);
+
+  const loadDetailsForDay = async (kind: 'PRESENT'|'LATE'|'ABSENT') => {
+    try {
+      const start = `${detailDateIso}T00:00:00.000Z`;
+      const end = `${detailDateIso}T23:59:59.999Z`;
+      const rows = await api.get(`/attendance?from=${encodeURIComponent(start)}&to=${encodeURIComponent(end)}`);
+      setDetailType(kind);
+      setDetailRecords(rows || []);
+      setDetailOpen(true);
+    } catch {
+      setDetailType(kind);
+      setDetailRecords([]);
+      setDetailOpen(true);
+    }
+  };
+
+  const formatTime = (iso?: string) => iso ? new Date(iso).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : '—';
+
+  // Geolocation: show a banner and request permission when user clicks
+  const [geoPromptVisible, setGeoPromptVisible] = useState<boolean>(false);
+  useEffect(() => {
+    try {
+      const perms = (navigator as any).permissions;
+      if (perms && typeof perms.query === 'function') {
+        perms.query({ name: 'geolocation' }).then((status: any) => {
+          setGeoPromptVisible(status.state !== 'granted');
+          if (typeof status.onchange === 'function') {
+            status.onchange = () => setGeoPromptVisible(status.state !== 'granted');
+          }
+        }).catch(() => setGeoPromptVisible(true));
+      } else {
+        // Older browsers: show prompt banner
+        setGeoPromptVisible(true);
+      }
+    } catch { setGeoPromptVisible(true); }
+  }, []);
+
+  const requestLocationAccess = () => {
+    if (!('geolocation' in navigator)) {
+      showToast(t('locationError'), 'error');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      () => {
+        setGeoPromptVisible(false);
+      },
+      (error) => {
+        showToast(error && (error as any).code === (navigator as any).geolocation?.PERMISSION_DENIED ? t('enableLocationPermission') : t('locationError'), 'warning');
+        setGeoPromptVisible(true);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
   // Keep authPresent in sync with localStorage changes
   useEffect(() => {
     const fn = () => {
@@ -1006,13 +1074,14 @@ export default function App() {
         try {
           usersRes = await api.get('/users');
         } catch (e) {
-          // حوّل بيانات وهمية لصيغة الموظفين الخارجية المتوقعة
-          usersRes = sampleUsers.map(u => ({ id: u.id, name: u.name, role: (u.role === UserRole.ADMIN ? 'admin' : 'employee'), department: u.department }));
+          usersRes = [];
+          showToast('فشل تحميل قائمة الموظفين من قاعدة البيانات.', 'error');
         }
         try {
           locationsRes = await api.get('/approved-locations');
         } catch (e) {
-          locationsRes = sampleLocations;
+          locationsRes = [];
+          showToast('فشل تحميل المواقع المعتمدة من قاعدة البيانات.', 'error');
         }
 
         // تحويل المستخدمين إلى الصيغة الداخلية
@@ -1023,17 +1092,7 @@ export default function App() {
           department: String(e.department || 'غير محدد'),
         }));
 
-        // إذا كانت القائمة فارغة، استخدم البيانات الوهمية مع إداري فيصل
-        const finalUsers = employees.length ? employees : sampleUsers;
-        // ضَمّن دائماً وجود إداري وموظف للتبديل بين الأدوار أثناء المعاينة
-        const ensuredUsers = [...finalUsers];
-        if (!ensuredUsers.some(u => u.role === UserRole.ADMIN)) {
-          ensuredUsers.unshift(sampleUsers[0]); // فيصل النتيفي (إداري)
-        }
-        if (!ensuredUsers.some(u => u.role === UserRole.EMPLOYEE)) {
-          ensuredUsers.push(sampleUsers[1]); // موظف تجريبي (موظف)
-        }
-        setUsers(ensuredUsers);
+        setUsers(employees);
         setLocations(Array.isArray(locationsRes) ? locationsRes : []);
 
         // تحميل سجلات الحضور من قاعدة بياناتنا، أو بيانات وهمية عند الفشل
@@ -1041,18 +1100,8 @@ export default function App() {
         try {
           att = await api.get('/attendance');
         } catch (e) {
-          att = sampleAttendance.map(r => ({
-            id: r.id,
-            user_id: r.userId,
-            check_in: r.checkIn,
-            check_out: r.checkOut ?? null,
-            is_late: r.isLate ? 1 : 0,
-            late_minutes: r.lateMinutes,
-            excuse_reason: r.excuseReason ?? null,
-            mandatory_excuse_reason: r.mandatoryExcuseReason ?? null,
-            location_id: r.locationId ?? null,
-            source: r.source,
-          }));
+          att = [];
+          showToast('فشل تحميل سجلات الحضور من قاعدة البيانات.', 'error');
         }
         const attNormalized: AttendanceRecord[] = (Array.isArray(att) ? att : []).map((r: any) => ({
           id: Number(r.id),
@@ -1075,8 +1124,8 @@ export default function App() {
           if (r === 'admin') desiredRole = UserRole.ADMIN;
           else if (r === 'employee') desiredRole = UserRole.EMPLOYEE;
         } catch {}
-        const defaultUser = (desiredRole ? ensuredUsers.find(u => u.role === desiredRole) : ensuredUsers.find(u => u.role === UserRole.EMPLOYEE))
-          || ensuredUsers.find(u => u.role === UserRole.ADMIN)
+        const defaultUser = (desiredRole ? employees.find(u => u.role === desiredRole) : employees.find(u => u.role === UserRole.EMPLOYEE))
+          || employees.find(u => u.role === UserRole.ADMIN)
           || null;
         setCurrentUser(defaultUser);
 
@@ -1088,13 +1137,9 @@ export default function App() {
           // فشل تحميل التنبيهات — لا يمنع التشغيل
         }
       } catch (err) {
-        // حتى لو فشل كل شيء، اعرض بيانات وهمية لضمان المعاينة
         console.error('Failed to load initial data', err);
-        setUsers(sampleUsers);
-        setLocations(sampleLocations);
-        setAttendance(sampleAttendance);
-        setError('تم استخدام بيانات وهمية للمعاينة.');
-        showToast('تم استخدام بيانات وهمية للمعاينة', 'warning');
+        setError('تعذّر تحميل البيانات من الخادم. الرجاء المحاولة لاحقاً.');
+        showToast('تعذّر تحميل البيانات من الخادم.', 'error');
       } finally {
         setIsLoading(false);
       }
@@ -1246,6 +1291,16 @@ export default function App() {
   return (
     <div className={`font-sans bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen flex flex-col transition-colors duration-300`}>
       <Header user={currentUser} toggleRole={toggleRole} theme={theme} toggleTheme={toggleTheme} notifications={notifications.filter(n => !n.targetUserIds || (currentUser && n.targetUserIds?.includes(currentUser.id)))} onMarkRead={markNotificationRead} onMarkAllRead={markAllNotificationsRead} lang={lang} setLang={setLang} />
+      {geoPromptVisible && (
+        <div className="container mx-auto px-4 mt-3">
+          <div className="mb-3 rounded-md bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 p-3 flex items-center justify-between">
+            <span className="text-sm">{t('enableLocationPermission')}</span>
+            <button onClick={requestLocationAccess} className="px-3 py-1.5 text-sm rounded-md bg-gradient-to-r from-indigo-600 to-blue-500 text-white hover:from-indigo-700 hover:to-blue-600">
+              {t('allowLocation')}
+            </button>
+          </div>
+        </div>
+      )}
       <main className="flex-grow container mx-auto p-4 md:p-8">
          {mainContent()}
       </main>
@@ -1371,16 +1426,12 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
                     };
 
                     try {
-                      await api.post('/attendance', {
+                      const saved = await api.post('/attendance/check-in', {
                         userId: newRecord.userId,
-                        checkIn: newRecord.checkIn,
-                        isLate: newRecord.isLate,
-                        lateMinutes: newRecord.lateMinutes,
                         locationId: newRecord.locationId,
-                        mandatoryExcuseReason: newRecord.mandatoryExcuseReason,
                         source: newRecord.source,
                       });
-                      setAttendance(prev => [...prev, newRecord]);
+                      setAttendance(prev => [...prev, { ...newRecord, id: Number(saved?.id || newRecord.id) }]);
                       showToast(t('checkInSuccessFrom').replace('{name}', validLocation.name), 'success');
                       // تنبيه تأخير أو حضور
                       if (isLate && settings.instantLateNotificationEnabled) {
@@ -1448,10 +1499,21 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
         performCheckIn(reason);
     };
 
-    const handleCheckOut = () => {
-        if (todayRecord) {
-            setAttendance(prev => prev.map(rec => rec.id === todayRecord.id ? { ...todayRecord, checkOut: new Date().toISOString() } : rec));
+    const handleCheckOut = async () => {
+        if (!todayRecord) {
+            showToast(t('notCheckedInYet'), 'warning');
+            return;
+        }
+        try {
+            const res = await api.post('/attendance/check-out', { userId: user.id });
+            const co = String(res?.checkOut || new Date().toISOString());
+            setAttendance(prev => prev.map(rec => rec.id === todayRecord.id ? { ...todayRecord, checkOut: co } : rec));
             showToast(t('checkOutSuccess'), 'success');
+        } catch (e: any) {
+            const msg = e?.message || '';
+            if (msg.includes('Already checked out')) showToast(t('dayComplete'), 'warning');
+            else if (msg.includes('No check-in')) showToast(t('notCheckedInYet'), 'warning');
+            else showToast('تعذّر تسجيل الانصراف من الخادم.', 'error');
         }
     };
     
@@ -2394,6 +2456,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
     };
 
     const handleGenerateMonthlyReport = () => {
+        // الشهر الماضي
         const lastMonth = new Date();
         lastMonth.setMonth(lastMonth.getMonth() - 1);
         const year = lastMonth.getFullYear();
@@ -2401,13 +2464,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
         const startDate = new Date(year, month, 1);
         const endDate = new Date(year, month + 1, 0);
 
+        // بيانات التأخير لكل موظف من السجلات الفعلية
         const lateEmployeesData = employeeUsers.map(user => {
             const userLateRecords = attendance.filter(a =>
                 a.userId === user.id && a.isLate &&
                 new Date(a.checkIn) >= startDate && new Date(a.checkIn) <= endDate
             );
             if (userLateRecords.length === 0) return null;
-            
             const totalLateMinutes = userLateRecords.reduce((sum, rec) => sum + rec.lateMinutes, 0);
             return {
                 name: user.name,
@@ -2418,15 +2481,52 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
             };
         }).filter(Boolean);
 
+        // حسابات الملخص الفعلية
+        const daysInMonth = endDate.getDate();
+        const allDays: Date[] = Array.from({ length: daysInMonth }, (_, i) => new Date(year, month, i + 1));
+        const totalEmployees = employeeUsers.length;
+        let totalPresent = 0;
+        let totalAbsences = 0;
+
+        const deptLateMinutes = new Map<string, number>();
+        const userById = new Map(employeeUsers.map(u => [u.id, u] as const));
+
+        allDays.forEach(d => {
+            const dayStr = d.toDateString();
+            const dayRecs = attendance.filter(a => new Date(a.checkIn).toDateString() === dayStr);
+            const presentCount = dayRecs.length;
+            totalPresent += presentCount;
+            totalAbsences += Math.max(totalEmployees - presentCount, 0);
+            // دقائق التأخير لكل قسم
+            dayRecs.forEach(r => {
+                if (r.isLate) {
+                    const u = userById.get(r.userId);
+                    const dept = u?.department || 'غير محدد';
+                    const cur = deptLateMinutes.get(dept) || 0;
+                    deptLateMinutes.set(dept, cur + (r.lateMinutes || 0));
+                }
+            });
+        });
+
+        const attendanceRatePct = totalEmployees > 0 && allDays.length > 0
+          ? Math.round((totalPresent / (totalEmployees * allDays.length)) * 100)
+          : 0;
+
+        let highestDept = '—';
+        let highestVal = -1;
+        for (const [dept, mins] of deptLateMinutes.entries()) {
+          if (mins > highestVal) { highestVal = mins; highestDept = dept; }
+        }
+
         const summary = {
             totalLateness: lateEmployeesData.reduce((sum, u) => sum + (u?.lateDays || 0), 0),
-            highestDept: 'تقنية المعلومات (محاكاة)',
-            attendanceRate: '92% (محاكاة)',
-            unjustifiedAbsences: 5,
+            highestDept,
+            attendanceRate: `${attendanceRatePct}%`,
+            unjustifiedAbsences: totalAbsences,
         };
 
         setGeneratedReport({
-            title: `التقرير الشهري التلقائي لشهر ${lastMonth.toLocaleDateString('ar-EG', {month: 'long'})}`,
+            title: `التقرير الشهري (بيانات فعلية) لشهر ${lastMonth.toLocaleDateString('ar-EG', {month: 'long'})}`,
             data: { lateEmployeesData, summary }
         });
         setActiveTab('reports');
@@ -2455,15 +2555,36 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
         );
     };
 
-    const StatCard: React.FC<{title: string; value: string | number; icon: React.ReactNode;}> = ({ title, value, icon }) => (
-        <div className="bg-white/70 dark:bg-gray-800/70 backdrop-blur p-6 rounded-xl shadow-md flex items-start justify-between ring-1 ring-gray-200/60 dark:ring-gray-700/60">
-            <div>
+    const StatCard: React.FC<{ title: string; value: string | number; icon: React.ReactNode; onClick?: () => void; variant?: 'emerald' | 'amber' | 'rose' }> = ({ title, value, icon, onClick, variant = 'emerald' }) => {
+        const borderGrad = variant === 'emerald'
+          ? 'from-emerald-400 via-teal-400 to-cyan-400'
+          : variant === 'amber'
+          ? 'from-amber-400 via-orange-400 to-yellow-400'
+          : 'from-rose-400 via-pink-400 to-fuchsia-400';
+        const hoverBg = variant === 'emerald'
+          ? 'hover:bg-emerald-50/60 dark:hover:bg-emerald-900/20'
+          : variant === 'amber'
+          ? 'hover:bg-amber-50/60 dark:hover:bg-amber-900/20'
+          : 'hover:bg-rose-50/60 dark:hover:bg-rose-900/20';
+        return (
+          <button
+            type="button"
+            onClick={onClick}
+            className={`w-full text-left relative bg-white/70 dark:bg-gray-800/70 backdrop-blur p-6 rounded-xl shadow-md flex items-start justify-between ring-1 ring-gray-200/60 dark:ring-gray-700/60 transition ${hoverBg}`}
+          >
+            <span className={`absolute inset-0 -z-0 rounded-xl pointer-events-none`}
+              aria-hidden="true"
+            >
+              <span className={`absolute inset-0 rounded-xl p-[1px] bg-gradient-to-r ${borderGrad}`}></span>
+            </span>
+            <div className="relative z-10">
                 <p className="text-sm text-gray-500 dark:text-gray-400">{title}</p>
                 <p className="text-3xl font-bold text-gray-800 dark:text-white">{value}</p>
             </div>
-            <div className="p-3.5 rounded-full bg-gradient-to-br from-emerald-500/10 to-teal-600/10 dark:from-emerald-400/20 dark:to-teal-500/20 ring-1 ring-emerald-200/50 dark:ring-teal-700/50">{icon}</div>
-        </div>
-    );
+            <div className="relative z-10 p-3.5 rounded-full bg-gradient-to-br from-white/50 to-transparent dark:from-gray-900/30 ring-1 ring-gray-200/50 dark:ring-gray-700/50">{icon}</div>
+          </button>
+        );
+    };
     
     return (
         <div className="grid grid-cols-12 gap-6">
@@ -2500,16 +2621,125 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                 <div className="transition-opacity duration-300 bg-gradient-to-br from-emerald-50/40 via-indigo-50/30 to-blue-50/40 dark:from-gray-900/20 dark:via-gray-900/10 dark:to-gray-900/20 p-1 rounded-2xl">
                 {activeTab === 'summary' && (
                     <div className="space-y-6 animate-fade-in">
-                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                           <StatCard title="إجمالي الحضور اليوم" value={totalAttendanceToday} icon={<CheckBadgeIcon className="w-7 h-7 text-emerald-600 dark:text-emerald-400"/>} />
-                           <StatCard title="متأخرون اليوم" value={totalLateToday} icon={<ClockIcon className="w-7 h-7 text-yellow-600 dark:text-yellow-400"/>} />
-                           <StatCard title="غياب اليوم" value={absentToday < 0 ? 0 : absentToday} icon={<UserRemoveIcon className="w-7 h-7 text-red-600 dark:text-red-400"/>} />
-                           <button onClick={handleGenerateMonthlyReport} className="bg-gradient-to-r from-blue-600 to-indigo-500 text-white rounded-xl shadow-md flex flex-col items-center justify-center p-6 hover:from-blue-700 hover:to-indigo-600 transition-colors">
+                        {/* تفاصيل اليوم - النافذة والنطاق */}
+                        {(() => {
+                          const presentIds = new Set(detailRecords.map(r => r.userId));
+                          const lateIds = new Set(detailRecords.filter(r => r.isLate).map(r => r.userId));
+                          const absentList = employeeUsers.filter(u => !presentIds.has(u.id));
+
+                          // واجهة البطاقات القابلة للنقر
+                          const Cards = (
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                              <StatCard
+                                title="إجمالي الحضور اليوم"
+                                value={totalAttendanceToday}
+                                icon={<CheckBadgeIcon className="w-7 h-7 text-emerald-600 dark:text-emerald-400"/>}
+                                variant="emerald"
+                                onClick={() => loadDetailsForDay('PRESENT')}
+                              />
+                              <StatCard
+                                title="متأخرون اليوم"
+                                value={totalLateToday}
+                                icon={<ClockIcon className="w-7 h-7 text-amber-600 dark:text-amber-400"/>}
+                                variant="amber"
+                                onClick={() => loadDetailsForDay('LATE')}
+                              />
+                              <StatCard
+                                title="غياب اليوم"
+                                value={absentToday < 0 ? 0 : absentToday}
+                                icon={<UserRemoveIcon className="w-7 h-7 text-rose-600 dark:text-rose-400"/>}
+                                variant="rose"
+                                onClick={() => loadDetailsForDay('ABSENT')}
+                              />
+                              <button
+                                onClick={() => {
+                                  // انتقال لتقرير شهري فعلي بناءً على البيانات من القاعدة
+                                  const now = new Date();
+                                  const first = new Date(now.getFullYear(), now.getMonth(), 1);
+                                  const last = new Date(now.getFullYear(), now.getMonth()+1, 0);
+                                  const toIsoDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+                                  setReportStartDate(toIsoDate(first));
+                                  setReportEndDate(toIsoDate(last));
+                                  setReportScope('ALL');
+                                  setReportType('ATTENDANCE_TIMES');
+                                  setActiveTab('reports');
+                                }}
+                                className="bg-gradient-to-r from-blue-600 to-indigo-500 text-white rounded-xl shadow-md flex flex-col items-center justify-center p-6 hover:from-blue-700 hover:to-indigo-600 transition-colors"
+                              >
                                 <DocumentTextIcon className="w-8 h-8 mb-2" />
                                 <span className="font-bold">عرض التقرير الشهري</span>
-                                <span className="text-xs">الذي تم إنشاؤه تلقائياً</span>
-                            </button>
-                        </div>
+                                <span className="text-xs">مباشر من قاعدة البيانات</span>
+                              </button>
+                            </div>
+                          );
+
+                          // واجهة النافذة المنبثقة للتفاصيل اليومية
+                          const DetailModal = detailOpen ? (
+                            <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur p-5 rounded-xl ring-1 ring-gray-200/60 dark:ring-gray-700/60 shadow-md">
+                              <div className="flex items-center justify-between mb-3">
+                                <div className="flex items-center gap-3">
+                                  {detailType === 'PRESENT' && <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"><CheckBadgeIcon className="w-4 h-4"/>حضور اليوم</span>}
+                                  {detailType === 'LATE' && <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm bg-amber-50 text-amber-700 ring-1 ring-amber-200"><ClockIcon className="w-4 h-4"/>متأخرون اليوم</span>}
+                                  {detailType === 'ABSENT' && <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm bg-rose-50 text-rose-700 ring-1 ring-rose-200"><UserRemoveIcon className="w-4 h-4"/>غياب اليوم</span>}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <input type="date" value={detailDateIso} onChange={e=>setDetailDateIso(e.target.value)} className="px-2 py-1 rounded-md bg-white/70 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60 text-sm"/>
+                                  <button onClick={()=>loadDetailsForDay(detailType as any)} className="px-2.5 py-1.5 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700">تحديث</button>
+                                  <button onClick={()=>setDetailOpen(false)} className="px-2.5 py-1.5 rounded-md bg-gray-200 text-gray-800 text-sm hover:bg-gray-300">إغلاق</button>
+                                </div>
+                              </div>
+
+                              {detailType !== 'ABSENT' && (
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-sm">
+                                    <thead className="text-xs text-gray-800 dark:text-gray-100 bg-gradient-to-r from-indigo-50 via-blue-50 to-cyan-50 dark:from-indigo-900/50 dark:via-blue-900/50 dark:to-cyan-900/50">
+                                      <tr>
+                                        <th className="px-3 py-2">الموظف</th>
+                                        <th className="px-3 py-2">وقت الحضور</th>
+                                        <th className="px-3 py-2">متأخر؟</th>
+                                        <th className="px-3 py-2">دقائق التأخير</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {detailRecords.map(r => {
+                                        const u = users.find(u=>u.id===r.userId);
+                                        return (
+                                          <tr key={r.id} className="border-b dark:border-gray-700 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/20 transition-colors">
+                                            <td className="px-3 py-2">{u?.name || `#${r.userId}`}</td>
+                                            <td className="px-3 py-2">{formatTime(r.checkIn)}</td>
+                                            <td className="px-3 py-2">{r.isLate ? 'نعم' : 'لا'}</td>
+                                            <td className="px-3 py-2">{r.isLate ? r.lateMinutes : 0}</td>
+                                          </tr>
+                                        );
+                                      })}
+                                      {detailRecords.length === 0 && (
+                                        <tr><td className="px-3 py-3 text-center" colSpan={4}>لا توجد بيانات متاحة لليوم المحدد.</td></tr>
+                                      )}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+
+                              {detailType === 'ABSENT' && (
+                                <div className="flex flex-wrap gap-2">
+                                  {absentList.map(u => (
+                                    <span key={u.id} className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-xs bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-200 dark:ring-rose-800">
+                                      {u.name}
+                                    </span>
+                                  ))}
+                                  {absentList.length === 0 && <div className="text-sm">لا يوجد غياب في هذا اليوم.</div>}
+                                </div>
+                              )}
+                            </div>
+                          ) : null;
+
+                          return (
+                            <>
+                              {Cards}
+                              {DetailModal}
+                            </>
+                          );
+                        })()}
                     </div>
                 )}
                 {activeTab === 'analytics' && (

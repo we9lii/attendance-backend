@@ -7,15 +7,15 @@ function getToken() {
 }
 
 function withAuth(headers: Record<string, string> = {}) {
-  const token = getToken();
-  return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
+  // Remove Authorization header entirely per requirement to drop JWT usage
+  return headers;
 }
 
 let apiBaseCache: string | null = null;
 
 async function resolveApiBase(): Promise<string> {
   if (apiBaseCache) return apiBaseCache;
-  // استخدم الخادم المحلي تلقائيًا عند التشغيل من localhost
+  // استخدم الخادم المحلي تلقائيًا عند التشغيل من localhost أو شبكة LAN
   try {
     const w = (typeof window !== 'undefined') ? (window as any) : {};
     const host = w?.location?.hostname || '';
@@ -26,7 +26,7 @@ async function resolveApiBase(): Promise<string> {
       return apiBaseCache;
     }
   } catch {}
-  // Prefer runtime config if available
+  // فضّل إعدادات وقت التشغيل (window.__CONFIG__ أو public/config.json) لاحقًا
   try {
     const w = (typeof window !== 'undefined') ? (window as any) : {};
     const runtime = w.__CONFIG__ && w.__CONFIG__.API_BASE;

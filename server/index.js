@@ -29,6 +29,10 @@ const API_USERNAME = process.env.API_USERNAME || '';
 const API_PASSWORD = process.env.API_PASSWORD || '';
 const API_JWT_TOKEN = process.env.API_JWT_TOKEN || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+// Allow disabling auth (JWT) completely via environment for deployments that don't need it
+const DISABLE_AUTH = ['1','true','yes','on'].includes(String(process.env.DISABLE_AUTH || '').toLowerCase());
+// Allow anonymous read-only access to users list when DB is offline (degraded mode)
+const ALLOW_ANON_USERS = ['1','true','yes','on'].includes(String(process.env.ALLOW_ANON_USERS || '').toLowerCase());
 const CONNECTOR_TOKEN = process.env.CONNECTOR_TOKEN || '';
 // Default env-based admin (for immediate access). Override via Render env.
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || '1';
@@ -53,6 +57,9 @@ const pool = mysql.createPool({
 
 // Track DB availability to allow degraded-mode startup when DB is offline
 let DB_AVAILABLE = true;
+// Fallback local users store when DB is unavailable (degraded mode)
+const localUsers = [];
+let localUserId = 1;
 
 async function initTables() {
   const conn = await pool.getConnection();
@@ -198,10 +205,79 @@ if (allowedOrigins.length === 0) {
   }));
   console.log('CORS: restricted to origins ->', Array.from(allowedSet));
 }
-app.use(express.json());
+  app.use(express.json());
+
+  // عندما تكون القاعدة غير متاحة محليًا، مرّر طلبات واجهة /api/* إلى خادم بعيد لتأمين بيانات فعلية
+  const REMOTE_API_BASE = process.env.REMOTE_API_BASE || 'https://attendance-backend-u99p.onrender.com';
+  app.use(async (req, res, next) => {
+    try {
+      if (!DB_AVAILABLE && req.originalUrl && req.originalUrl.startsWith('/api/')) {
+        // لا تُحوّل مسارات لا تعتمد على قاعدة البيانات أو تحتاج مصادقة محلية
+        // أمثلة: تسجيل الدخول، التحقق من المستخدم الحالي، إدارة المستخدمين المحلية عند تعذّر القاعدة، تسجيل الخروج، الصحة
+        const skipForward = (
+          req.originalUrl.startsWith('/api/login') ||
+          req.originalUrl.startsWith('/api/logout') ||
+          req.originalUrl.startsWith('/api/me') ||
+          req.originalUrl.startsWith('/api/users') ||
+          req.originalUrl.startsWith('/api/health')
+        );
+        if (skipForward) {
+          return next();
+        }
+        const url = REMOTE_API_BASE.replace(/\/+$/, '') + req.originalUrl;
+        const headers = { ...req.headers };
+        delete headers['host'];
+        // حافظ على التوكين إن وُجد
+        if (req.headers['authorization']) {
+          headers['authorization'] = req.headers['authorization'];
+        }
+        // اضبط نوع المحتوى الافتراضي للطلبات غير GET/HEAD
+        if (!headers['content-type'] && req.method !== 'GET' && req.method !== 'HEAD') {
+          headers['content-type'] = 'application/json';
+        }
+        const opts = { method: req.method, headers };
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          // أرسل الجسم كـ JSON إن كان مفصولًا
+          opts.body = headers['content-type'] && String(headers['content-type']).includes('application/json')
+            ? JSON.stringify(req.body || {})
+            : req.body;
+        }
+        const resp = await fetch(url, opts);
+        const ct = resp.headers.get('content-type') || 'application/json';
+        const buf = Buffer.from(await resp.arrayBuffer());
+        res.status(resp.status).set('content-type', ct).send(buf);
+        return; // لا تُكمل إلى الراوتر المحلي
+      }
+    } catch (e) {
+      return res.status(502).json({ error: String(e.message || e) });
+    }
+    next();
+  });
 
 // Health
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+// DB health: tries to get a connection and run SELECT 1
+app.get('/api/health/db', async (req, res) => {
+  try {
+    const conn = await pool.getConnection();
+    try {
+      await conn.query('SELECT 1 AS ok');
+      return res.json({ server: true, db: true });
+    } finally { conn.release(); }
+  } catch (e) {
+    return res.status(503).json({ server: true, db: false, error: String(e.message || e) });
+  }
+});
+// Public IP health: shows server's outward IP (useful for Remote MySQL whitelisting)
+app.get('/api/health/ip', async (req, res) => {
+  try {
+    const resp = await fetch('https://api.ipify.org?format=json');
+    const data = await resp.json();
+    return res.json({ server: true, ip: data?.ip || null });
+  } catch (e) {
+    return res.status(502).json({ server: true, error: String(e.message || e) });
+  }
+});
 
 // Auth helpers
 function signToken(payload) {
@@ -213,6 +289,10 @@ function getAuth(req) {
   return m ? m[1] : null;
 }
 function requireAuth(req, res, next) {
+  if (DISABLE_AUTH) {
+    // Skip auth entirely when disabled
+    return next();
+  }
   try {
     const token = getAuth(req);
     if (!token) return res.status(401).json({ error: 'Unauthorized' });
@@ -224,6 +304,10 @@ function requireAuth(req, res, next) {
   }
 }
 function requireAdmin(req, res, next) {
+  if (DISABLE_AUTH) {
+    // Skip admin check when auth is disabled
+    return next();
+  }
   try {
     const token = getAuth(req);
     if (!token) return res.status(401).json({ error: 'Unauthorized' });
@@ -234,6 +318,14 @@ function requireAdmin(req, res, next) {
   } catch (e) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+}
+// Optional auth guard for users list when DB is offline and anonymous mode enabled
+function optionalAuthForUsers(req, res, next) {
+  if (!DB_AVAILABLE && ALLOW_ANON_USERS && req.method === 'GET') {
+    // Skip auth for read-only users list in degraded mode
+    return next();
+  }
+  return requireAuth(req, res, next);
 }
 
 // Auth routes (env-based admin for MVP; extend to DB users later)
@@ -257,6 +349,8 @@ app.post('/api/login', async (req, res) => {
     } catch (e) {
       // DB unavailable or query failed; fall back to env-based accounts below
     }
+    // Debug: log env-based credentials check
+    console.log('LOGIN attempt', { username: String(username), password: String(password) ? '***' : '' }, 'ADMIN env', { ADMIN_USERNAME, ADMIN_PASSWORD: ADMIN_PASSWORD ? '***' : '' });
     if (String(username) === ADMIN_USERNAME && String(password) === ADMIN_PASSWORD) {
       const token = signToken({ username, role: 'admin' });
       return res.json({ token, user: { username, role: 'admin' } });
@@ -281,8 +375,12 @@ app.post('/api/logout', (req, res) => {
 });
 
 // Local users management
-app.get('/api/users', requireAuth, async (req, res) => {
+app.get('/api/users', optionalAuthForUsers, async (req, res) => {
   try {
+    // Fallback: when DB is unavailable, return local in-memory users list
+    if (!DB_AVAILABLE) {
+      return res.json(localUsers);
+    }
     const conn = await pool.getConnection();
     try {
       const [rows] = await conn.query('SELECT id, name, username, role, department, active FROM users ORDER BY id ASC');
@@ -297,6 +395,20 @@ app.post('/api/users', requireAdmin, async (req, res) => {
     if (!name || !username || !password) return res.status(400).json({ error: 'Missing name/username/password' });
     const r = String(role || 'employee');
     if (!['admin','employee'].includes(r)) return res.status(400).json({ error: 'Invalid role' });
+    // Fallback: when DB is unavailable, simulate user creation in-memory
+    if (!DB_AVAILABLE) {
+      const user = {
+        id: localUserId++,
+        name,
+        username,
+        role: r,
+        department: department || null,
+        active: 1,
+      };
+      localUsers.push(user);
+      return res.json(user);
+    }
+    // Normal path: DB available
     if (!bcrypt) return res.status(503).json({ error: 'Password hashing unavailable (bcryptjs not installed)' });
     const hash = await bcrypt.hash(String(password), 10);
     const conn = await pool.getConnection();
@@ -555,6 +667,70 @@ app.get('/api/attendance', async (req, res) => {
   sql += ' ORDER BY check_in DESC LIMIT 5000';
   const [rows] = await pool.query(sql, params);
   res.json(rows);
+});
+
+// Enforce one check-in per day
+app.post('/api/attendance/check-in', requireAuth, async (req, res) => {
+  try {
+    if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+    const { userId, locationId, source } = req.body || {};
+    if (!userId || !source) return res.status(400).json({ error: 'Missing required fields' });
+
+    const now = new Date();
+    // Late threshold at 08:15 local time
+    const lateThreshold = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 8, 15, 0);
+
+    // Check existing record for today
+    const [rows] = await pool.query(
+      'SELECT id, check_in, check_out FROM attendance_logs WHERE user_id=? AND DATE(check_in)=DATE(?) ORDER BY check_in ASC LIMIT 1',
+      [Number(userId), now]
+    );
+    if (Array.isArray(rows) && rows.length > 0) {
+      return res.status(409).json({ error: 'Already checked in today' });
+    }
+
+    const isLate = now > lateThreshold;
+    const lateMinutes = isLate ? Math.round((now.getTime() - lateThreshold.getTime()) / 60000) : 0;
+    const [result] = await pool.query(
+      `INSERT INTO attendance_logs (user_id, check_in, is_late, late_minutes, location_id, source)
+       VALUES (?,?,?,?,?,?)`,
+      [Number(userId), now, isLate ? 1 : 0, lateMinutes, locationId || null, String(source)]
+    );
+    return res.status(201).json({ id: result.insertId, userId: Number(userId), checkIn: now.toISOString(), isLate, lateMinutes, locationId: locationId || null, source: String(source) });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+// Enforce one check-out per day
+app.post('/api/attendance/check-out', requireAuth, async (req, res) => {
+  try {
+    if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+    const { userId } = req.body || {};
+    if (!userId) return res.status(400).json({ error: 'Missing required fields' });
+
+    const now = new Date();
+    const [rows] = await pool.query(
+      'SELECT id, check_in, check_out FROM attendance_logs WHERE user_id=? AND DATE(check_in)=DATE(?) ORDER BY check_in ASC LIMIT 1',
+      [Number(userId), now]
+    );
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(409).json({ error: 'No check-in recorded today' });
+    }
+    const rec = rows[0];
+    if (rec.check_out) {
+      return res.status(409).json({ error: 'Already checked out today' });
+    }
+    // Only allow checkout after check-in time
+    const checkIn = new Date(rec.check_in);
+    if (now <= checkIn) {
+      return res.status(400).json({ error: 'Invalid checkout time' });
+    }
+    await pool.query('UPDATE attendance_logs SET check_out=? WHERE id=?', [now, rec.id]);
+    return res.json({ id: rec.id, userId: Number(userId), checkOut: now.toISOString() });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
 });
 
 // Notifications API

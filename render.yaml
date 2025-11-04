@@ -10,6 +10,8 @@ services:
     envVars:
       - key: CORS_ORIGIN
         value: "http://qcheck.qssun.solar,https://qcheck.qssun.solar"
+      - key: DISABLE_AUTH
+        value: "true"
       - key: DB_SSL
         value: "true"
       - key: NODE_VERSION
