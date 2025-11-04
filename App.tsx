@@ -2558,7 +2558,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
           // أرسل الحقول بصيغة عربية ومتوافقة مع الخادم
           const payload = {
             id,
-            status: status === RequestStatus.APPROVED ? 'مقبول' : status === RequestStatus.REJECTED ? 'مرفوض' : 'قيد المراجعة',
+            status: status === RequestStatus.APPROVED ? 'مقبول' : status === RequestStatus.REJECTED ? 'مرفض' : 'قيد المراجعة',
             type: req.type,
           };
           const updated = await api.put(`/requests/${id}`, payload);
