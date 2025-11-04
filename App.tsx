@@ -2555,7 +2555,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
           return;
         }
         try {
-          const updated = await api.put(`/requests/${id}`, { status, type: req.type });
+          // أرسل الحقول بصيغة عربية ومتوافقة مع الخادم
+          const payload = {
+            id,
+            status: status === RequestStatus.APPROVED ? 'مقبول' : status === RequestStatus.REJECTED ? 'مرفوض' : 'قيد المراجعة',
+            type: req.type,
+          };
+          const updated = await api.put(`/requests/${id}`, payload);
           setRequests(prev => prev.map(r => r.id === id ? { ...r, status: String(updated.status || status) as any } : r));
           showToast(status === RequestStatus.APPROVED ? 'تم قبول الطلب' : 'تم رفض الطلب', 'success');
         } catch {

@@ -43,7 +43,7 @@ export enum RequestType {
 export enum RequestStatus {
   PENDING = 'قيد المراجعة',
   APPROVED = 'مقبول',
-  REJECTED = 'مرفض',
+  REJECTED = 'مرفوض',
 }
 
 export interface Request {
