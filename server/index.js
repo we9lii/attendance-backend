@@ -224,7 +224,10 @@ if (allowedOrigins.length === 0) {
           req.originalUrl.startsWith('/api/logout') ||
           req.originalUrl.startsWith('/api/me') ||
           req.originalUrl.startsWith('/api/users') ||
-          req.originalUrl.startsWith('/api/health')
+          req.originalUrl.startsWith('/api/health') ||
+          // لا تحوّل طلبات الطلبات والدردشة، أبقها محلية وإلا ستفشل على الخادم البعيد
+          req.originalUrl.startsWith('/api/requests') ||
+          req.originalUrl.startsWith('/api/chat')
         );
         if (skipForward) {
           return next();
@@ -797,6 +800,135 @@ app.post('/api/notifications/read', requireAuth, async (req, res) => {
   const { id } = req.body || {};
   if (!id) return res.status(400).json({ error: 'Missing id' });
   await pool.query('UPDATE notifications SET is_read = 1 WHERE id = ?', [Number(id)]);
+  res.json({ ok: true });
+});
+
+// Requests API (leave/excuse)
+// Unified list
+app.get('/api/requests', requireAuth, async (req, res) => {
+  if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+  const { userId, status, type, limit } = req.query;
+  const lim = Math.max(1, Math.min(1000, Number(limit) || 500));
+  const paramsLeave = [];
+  const paramsExcuse = [];
+  let whereLeave = '1=1';
+  let whereExcuse = '1=1';
+  if (userId) { whereLeave += ' AND user_id = ?'; paramsLeave.push(Number(userId)); whereExcuse += ' AND user_id = ?'; paramsExcuse.push(Number(userId)); }
+  if (status) { whereLeave += ' AND status = ?'; paramsLeave.push(String(status)); whereExcuse += ' AND status = ?'; paramsExcuse.push(String(status)); }
+  if (type) {
+    const t = String(type);
+    if (t === 'إجازة' || t.toLowerCase().includes('leave')) {
+      whereExcuse += ' AND 0'; // exclude
+    } else if (t === 'عذر' || t.toLowerCase().includes('excuse')) {
+      whereLeave += ' AND 0'; // exclude
+    }
+  }
+  const [leaveRows] = await pool.query(
+    `SELECT id, user_id, date, duration, reason, status, created_at FROM leave_requests WHERE ${whereLeave} ORDER BY created_at DESC LIMIT ?`,
+    [...paramsLeave, lim]
+  );
+  const [excuseRows] = await pool.query(
+    `SELECT id, user_id, date, NULL AS duration, reason, status, created_at FROM excuse_requests WHERE ${whereExcuse} ORDER BY created_at DESC LIMIT ?`,
+    [...paramsExcuse, lim]
+  );
+  const data = [
+    ...leaveRows.map(r => ({ id: r.id, userId: r.user_id, type: 'إجازة', date: r.date, duration: r.duration || undefined, reason: r.reason, status: r.status })),
+    ...excuseRows.map(r => ({ id: r.id, userId: r.user_id, type: 'عذر', date: r.date, reason: r.reason, status: r.status }))
+  ].sort((a, b) => (new Date(b.date).getTime()) - (new Date(a.date).getTime()));
+  res.json(data);
+});
+
+// Create request
+app.post('/api/requests', requireAuth, async (req, res) => {
+  if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+  const { userId, type, date, duration, reason } = req.body || {};
+  if (!userId || !type || !date || !reason) return res.status(400).json({ error: 'Missing fields' });
+  const t = String(type);
+  if (t === 'إجازة' || t.toLowerCase().includes('leave')) {
+    const [result] = await pool.query(
+      'INSERT INTO leave_requests (user_id, date, duration, reason, status) VALUES (?,?,?,?,?)',
+      [Number(userId), new Date(String(date)), (duration != null ? Number(duration) : null), String(reason), 'قيد المراجعة']
+    );
+    const id = result.insertId;
+    const [rows] = await pool.query('SELECT id, user_id, date, duration, reason, status FROM leave_requests WHERE id=?', [id]);
+    const r = rows[0];
+    return res.status(201).json({ id: r.id, userId: r.user_id, type: 'إجازة', date: r.date, duration: r.duration || undefined, reason: r.reason, status: r.status });
+  } else if (t === 'عذر' || t.toLowerCase().includes('excuse')) {
+    const [result] = await pool.query(
+      'INSERT INTO excuse_requests (user_id, date, reason, status) VALUES (?,?,?,?)',
+      [Number(userId), new Date(String(date)), String(reason), 'قيد المراجعة']
+    );
+    const id = result.insertId;
+    const [rows] = await pool.query('SELECT id, user_id, date, reason, status FROM excuse_requests WHERE id=?', [id]);
+    const r = rows[0];
+    return res.status(201).json({ id: r.id, userId: r.user_id, type: 'عذر', date: r.date, reason: r.reason, status: r.status });
+  }
+  return res.status(400).json({ error: 'Invalid type' });
+});
+
+// Update request status
+app.put('/api/requests/:id', requireAuth, async (req, res) => {
+  if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+  const id = Number(req.params.id);
+  const { status, type } = req.body || {};
+  if (!id || !status || !type) return res.status(400).json({ error: 'Missing id/status/type' });
+  const st = String(status);
+  const t = String(type);
+  if (!['قيد المراجعة','مقبول','مرفض'].includes(st)) return res.status(400).json({ error: 'Invalid status' });
+  if (t === 'إجازة' || t.toLowerCase().includes('leave')) {
+    await pool.query('UPDATE leave_requests SET status=? WHERE id=?', [st, id]);
+    const [rows] = await pool.query('SELECT id, user_id, date, duration, reason, status FROM leave_requests WHERE id=?', [id]);
+    const r = rows[0];
+    return res.json({ id: r.id, userId: r.user_id, type: 'إجازة', date: r.date, duration: r.duration || undefined, reason: r.reason, status: r.status });
+  } else if (t === 'عذر' || t.toLowerCase().includes('excuse')) {
+    await pool.query('UPDATE excuse_requests SET status=? WHERE id=?', [st, id]);
+    const [rows] = await pool.query('SELECT id, user_id, date, reason, status FROM excuse_requests WHERE id=?', [id]);
+    const r = rows[0];
+    return res.json({ id: r.id, userId: r.user_id, type: 'عذر', date: r.date, reason: r.reason, status: r.status });
+  }
+  return res.status(400).json({ error: 'Invalid type' });
+});
+
+// Chat API
+// Fetch messages: either conversation (userA/userB) or by userId
+app.get('/api/chat/messages', requireAuth, async (req, res) => {
+  if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+  const { userA, userB, userId, limit } = req.query;
+  const lim = Math.max(1, Math.min(500, Number(limit) || 100));
+  let sql = 'SELECT id, from_user_id, to_user_id, message, timestamp, is_read AS `read` FROM chat_messages';
+  const params = [];
+  if (userA && userB) {
+    sql += ' WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)';
+    params.push(Number(userA), Number(userB), Number(userB), Number(userA));
+  } else if (userId) {
+    sql += ' WHERE (from_user_id = ?) OR (to_user_id = ?)';
+    params.push(Number(userId), Number(userId));
+  }
+  sql += ' ORDER BY timestamp ASC LIMIT ?';
+  params.push(lim);
+  const [rows] = await pool.query(sql, params);
+  const data = rows.map(r => ({ id: r.id, fromUserId: r.from_user_id, toUserId: r.to_user_id, message: r.message, timestamp: r.timestamp, read: !!r.read }));
+  res.json(data);
+});
+
+// Send message
+app.post('/api/chat/messages', requireAuth, async (req, res) => {
+  if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+  const { fromUserId, toUserId, message } = req.body || {};
+  if (!fromUserId || !toUserId || !message) return res.status(400).json({ error: 'Missing fields' });
+  const [result] = await pool.query('INSERT INTO chat_messages (from_user_id, to_user_id, message) VALUES (?,?,?)', [Number(fromUserId), Number(toUserId), String(message)]);
+  const id = result.insertId;
+  const [rows] = await pool.query('SELECT id, from_user_id, to_user_id, message, timestamp, is_read AS `read` FROM chat_messages WHERE id=?', [id]);
+  const r = rows[0];
+  res.status(201).json({ id: r.id, fromUserId: r.from_user_id, toUserId: r.to_user_id, message: r.message, timestamp: r.timestamp, read: !!r.read });
+});
+
+// Mark conversation messages as read (messages received by userA from userB)
+app.post('/api/chat/read', requireAuth, async (req, res) => {
+  if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+  const { userA, userB } = req.body || {};
+  if (!userA || !userB) return res.status(400).json({ error: 'Missing userA/userB' });
+  await pool.query('UPDATE chat_messages SET is_read = 1 WHERE to_user_id = ? AND from_user_id = ?', [Number(userA), Number(userB)]);
   res.json({ ok: true });
 });
 

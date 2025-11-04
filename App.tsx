@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import MapPicker from './components/MapPicker';
 import type { User, ApprovedLocation, AttendanceRecord, Request, Notification, ChatMessage, SystemSettings } from './types';
 import { UserRole, RequestType, RequestStatus } from './types';
 import {
@@ -1147,6 +1148,41 @@ export default function App() {
         } catch (e) {
           // فشل تحميل التنبيهات — لا يمنع التشغيل
         }
+
+        // تحميل الطلبات من الخادم لتكون مشتركة ومحفوظة
+        try {
+          const reqs = await api.get(`/requests?limit=500`);
+          const normalized = (Array.isArray(reqs) ? reqs : []).map((r: any) => ({
+            id: Number(r.id),
+            userId: Number(r.userId || r.user_id),
+            type: String(r.type) as any,
+            date: String(r.date),
+            duration: r.duration != null ? Number(r.duration) : undefined,
+            reason: String(r.reason || ''),
+            status: String(r.status) as any,
+          }));
+          setRequests(normalized);
+        } catch (e) {
+          // إبقاء الحالة فارغة عند الفشل
+        }
+
+        // تحميل رسائل الدردشة الخاصة بالمستخدم الحالي
+        try {
+          if (defaultUser?.id) {
+            const msgs = await api.get(`/chat/messages?userId=${defaultUser.id}&limit=200`);
+            const normalizedMsgs = (Array.isArray(msgs) ? msgs : []).map((m: any) => ({
+              id: Number(m.id),
+              fromUserId: Number(m.fromUserId || m.from_user_id),
+              toUserId: Number(m.toUserId || m.to_user_id),
+              message: String(m.message || ''),
+              timestamp: new Date(m.timestamp).toISOString(),
+              read: !!(m.read),
+            }));
+            setChatMessages(normalizedMsgs);
+          }
+        } catch (e) {
+          // فشل تحميل الدردشة لا يمنع التشغيل
+        }
       } catch (err) {
         console.error('Failed to load initial data', err);
         setError('تعذّر تحميل البيانات من الخادم. الرجاء المحاولة لاحقاً.');
@@ -1371,7 +1407,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
         return a.userId === user.id && a.isLate && checkInDate.getMonth() === new Date().getMonth();
     }).length;
 
-    const handleRequestSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    const handleRequestSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         const formData = new FormData(e.currentTarget);
         // التحقق: تاريخ العذر لا يكون مستقبليًا
@@ -1396,17 +1432,30 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
           reasonComposed = `نوع العذر: ${excuseType} — السبب: ${reasonComposed || '—'}`;
         }
 
-        setRequests(prev => [...prev, {
-            id: Date.now(),
+        try {
+          const payload: any = {
             userId: user.id,
             type: requestType,
-            date: formData.get('date') as string,
+            date: String(formData.get('date') || ''),
             reason: reasonComposed,
-            status: RequestStatus.PENDING,
-            // FIX: Use `Number()` for safer type conversion from form data. `parseInt` can cause errors with null/empty values.
-            ...(requestType === RequestType.LEAVE && { duration: Number(formData.get('duration')) }),
-        }]);
-        showToast(t('requestSentSuccess'), 'success');
+          };
+          if (requestType === RequestType.LEAVE) payload.duration = Number(formData.get('duration')) || 1;
+          const created = await api.post('/requests', payload);
+          const newReq: Request = {
+            id: Number(created.id || Date.now()),
+            userId: Number(created.userId || user.id),
+            type: String(created.type || requestType) as any,
+            date: String(created.date || payload.date),
+            reason: String(created.reason || reasonComposed),
+            status: String(created.status || RequestStatus.PENDING) as any,
+            duration: created.duration != null ? Number(created.duration) : (payload.duration ?? undefined),
+          };
+          setRequests(prev => [...prev, newReq]);
+          showToast(t('requestSentSuccess'), 'success');
+        } catch (err) {
+          showToast('تعذّر إرسال الطلب إلى الخادم.', 'error');
+          return;
+        }
         // إشعار للإداري بوجود طلب جديد
         const adminIds = allUsers.filter(u => u.role === UserRole.ADMIN).map(u => u.id);
     const notif = { id: Date.now() + 1, title: 'طلب جديد', message: `لديك طلب ${requestType === RequestType.LEAVE ? 'إجازة' : 'عذر'} جديد من ${user.name}`, timestamp: new Date().toISOString(), read: false, targetUserIds: adminIds };
@@ -1559,7 +1608,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [chatMessages, user.id, allUsers]);
 
-    const sendEmployeeMessage = () => {
+    const sendEmployeeMessage = async () => {
         const text = employeeChatInput.trim();
         if (!text || !activeAdminId) return;
         const msgsForAdmin = [...chatMessages]
@@ -1573,17 +1622,22 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
             showToast(t('cannotSendChatClosed'), 'warning');
             return;
         }
-        setChatMessages(prev => ([
+        try {
+          const sent = await api.post('/chat/messages', { fromUserId: user.id, toUserId: activeAdminId, message: text });
+          setChatMessages(prev => ([
             ...prev,
             {
-                id: Date.now(),
-                fromUserId: user.id,
-                toUserId: activeAdminId,
-                message: text,
-                timestamp: new Date().toISOString(),
-                read: false,
+              id: Number(sent.id),
+              fromUserId: Number(sent.fromUserId),
+              toUserId: Number(sent.toUserId),
+              message: String(sent.message),
+              timestamp: new Date(sent.timestamp).toISOString(),
+              read: !!sent.read,
             }
-        ]));
+          ]));
+        } catch {
+          showToast('تعذّر إرسال رسالة الدردشة.', 'error');
+        }
         setEmployeeChatInput('');
     };
     
@@ -2011,15 +2065,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
     const [chatHistoryFilter, setChatHistoryFilter] = useState<'ALL'|'OPEN'|'CLOSED'>('ALL');
     const [chatHistoryQuery, setChatHistoryQuery] = useState<string>('');
 
-    const markSessionMessagesRead = (employeeId: number) => {
+    const markSessionMessagesRead = async (employeeId: number) => {
+      // ضع مقروء محلياً
       setChatMessages(prev => prev.map(m =>
         (m.toUserId === currentUser.id && m.fromUserId === employeeId) ? { ...m, read: true } : m
       ));
+      // وحاول تحديث الخادم
+      try { await api.post('/chat/read', { userA: currentUser.id, userB: employeeId }); } catch {}
     };
     const activeChatSession = activeChatEmployeeId != null
       ? chatSessions.find(s => s.employeeId === activeChatEmployeeId && s.isOpen) || null
       : null;
-    const openChatWith = (employeeId: number) => {
+    const openChatWith = async (employeeId: number) => {
       setActiveChatEmployeeId(employeeId);
       const existsOpen = chatSessions.some(s => s.employeeId === employeeId && s.isOpen);
       if (!existsOpen) {
@@ -2030,52 +2087,59 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
           createdAt: new Date().toISOString(),
         };
         setChatSessions(prev => [...prev, newSession]);
-        // أرسل رسالة بدء للمحادثة وإشعار للموظف لفتح الصندوق عنده
-        setChatMessages(prev => ([
-          ...prev,
-          {
-            id: Date.now() + 1,
-            fromUserId: currentUser.id,
-            toUserId: employeeId,
-            message: t('adminChatStarted'),
-            timestamp: new Date().toISOString(),
-            read: false,
-          }
-        ]));
-        setNotifications(prev => ([
-          ...prev,
-          {
-            id: Date.now() + 2,
-            title: t('newChat'),
-            message: t('adminStartedChatTapToOpen'),
-            timestamp: new Date().toISOString(),
-            read: false,
-            targetUserIds: [employeeId]
-          }
-        ]));
+        // تحميل تاريخ المحادثة لهذه الجهة
+        try {
+          const msgs = await api.get(`/chat/messages?userA=${currentUser.id}&userB=${employeeId}&limit=200`);
+          const normalizedMsgs = (Array.isArray(msgs) ? msgs : []).map((m: any) => ({
+            id: Number(m.id),
+            fromUserId: Number(m.fromUserId || m.from_user_id),
+            toUserId: Number(m.toUserId || m.to_user_id),
+            message: String(m.message || ''),
+            timestamp: new Date(m.timestamp).toISOString(),
+            read: !!(m.read),
+          }));
+          setChatMessages(prev => {
+            // دمج دون تكرار
+            const seen = new Set(prev.map(p => p.id));
+            const merged = [...prev];
+            for (const m of normalizedMsgs) { if (!seen.has(m.id)) merged.push(m); }
+            return merged;
+          });
+        } catch {}
+        // أرسل رسالة بدء للمحادثة وإشعار للموظف لفتح الصندوق عنده (محفوظة على الخادم)
+        try {
+          const startMsg = await api.post('/chat/messages', { fromUserId: currentUser.id, toUserId: employeeId, message: t('adminChatStarted') });
+          setChatMessages(prev => [...prev, {
+            id: Number(startMsg.id), fromUserId: Number(startMsg.fromUserId), toUserId: Number(startMsg.toUserId),
+            message: String(startMsg.message), timestamp: new Date(startMsg.timestamp).toISOString(), read: !!startMsg.read
+          }]);
+        } catch {}
+        try { await api.post('/notifications', { title: t('newChat'), message: t('adminStartedChatTapToOpen'), targetUserIds: [employeeId] }); } catch {}
       }
     };
-    const closeActiveChat = () => {
+    const closeActiveChat = async () => {
       if (activeChatEmployeeId == null) return;
       setChatSessions(prev => prev.map(s => s.employeeId === activeChatEmployeeId && s.isOpen
         ? { ...s, isOpen: false, closedAt: new Date().toISOString() }
         : s
       ));
-      // Add closure message by admin
-      setChatMessages(prev => ([
-        ...prev,
-        {
-          id: Date.now(),
-          fromUserId: currentUser.id,
-          toUserId: activeChatEmployeeId!,
-          message: t('adminChatClosed'),
-          timestamp: new Date().toISOString(),
-          read: false,
-}
-
-      ]));
+      // Send closure message by admin and persist to server
+      try {
+        const sent = await api.post('/chat/messages', { fromUserId: currentUser.id, toUserId: activeChatEmployeeId!, message: t('adminChatClosed') });
+        setChatMessages(prev => ([
+          ...prev,
+          {
+            id: Number(sent.id),
+            fromUserId: Number(sent.fromUserId),
+            toUserId: Number(sent.toUserId),
+            message: String(sent.message),
+            timestamp: new Date(sent.timestamp).toISOString(),
+            read: !!sent.read,
+          }
+        ]));
+      } catch {}
     };
-    const sendChatMessage = () => {
+    const sendChatMessage = async () => {
       if (!activeChatEmployeeId) return;
       const text = chatInput.trim();
       if (!text) return;
@@ -2084,17 +2148,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
         showToast(t('cannotSendChatClosed'), 'warning');
         return;
       }
-      setChatMessages(prev => ([
-        ...prev,
-        {
-          id: Date.now(),
-          fromUserId: currentUser.id,
-          toUserId: activeChatEmployeeId,
-          message: text,
-          timestamp: new Date().toISOString(),
-          read: false,
-        }
-      ]));
+      try {
+        const sent = await api.post('/chat/messages', { fromUserId: currentUser.id, toUserId: activeChatEmployeeId, message: text });
+        setChatMessages(prev => ([...prev, {
+          id: Number(sent.id), fromUserId: Number(sent.fromUserId), toUserId: Number(sent.toUserId), message: String(sent.message), timestamp: new Date(sent.timestamp).toISOString(), read: !!sent.read
+        }]));
+      } catch {
+        // فشل الإرسال لا يمنع واجهة المستخدم من العمل لكن لا تخزّن محلياً كنجاح
+        showToast('تعذّر إرسال رسالة الدردشة.', 'error');
+      }
       setChatInput('');
     };
 
@@ -2485,9 +2547,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
     
-    const handleRequestStatus = (id: number, status: RequestStatus) => {
-        setRequests(prev => prev.map(req => req.id === id ? {...req, status} : req));
-        showToast(status === RequestStatus.APPROVED ? 'تم قبول الطلب' : 'تم رفض الطلب', 'success');
+    const handleRequestStatus = async (id: number, status: RequestStatus) => {
+        // تحديث الحالة على الخادم لضمان المشاركة عبر الجلسات
+        try {
+          const updated = await api.put(`/requests/${id}`, { status });
+          setRequests(prev => prev.map(req => req.id === id ? { ...req, status: String(updated.status || status) as any } : req));
+          showToast(status === RequestStatus.APPROVED ? 'تم قبول الطلب' : 'تم رفض الطلب', 'success');
+        } catch {
+          showToast('تعذّر تحديث حالة الطلب على الخادم.', 'error');
+          return;
+        }
         // إنشاء تنبيه للمستخدم صاحب الطلب
         const req = requests.find(r => r.id === id);
         if (req) {
@@ -3658,62 +3727,60 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                               </div>
                               <div>
                                 <label className="block text-sm mb-1">{t('interactiveMap')}</label>
-                                <div className="relative h-48 rounded-md bg-gradient-to-br from-blue-100 to-blue-200 dark:from-blue-900 dark:to-blue-800 ring-1 ring-gray-200/60 dark:ring-gray-700/60"
-                                     onClick={(e)=>{
-                                       const rect = (e.target as HTMLDivElement).getBoundingClientRect();
-                                       const relX = (e as any).clientX - rect.left;
-                                       const relY = (e as any).clientY - rect.top;
-                                       // استخدام الموقع الحالي كمصدر لحسابات تقريبية: نسمح بإدخال يدوي أيضًا
-                                       const lat = Number(newLoc.latitude) + ((relY - rect.height/2) / rect.height) * 0.01;
-                                       const lon = Number(newLoc.longitude) + ((relX - rect.width/2) / rect.width) * 0.01;
-                                       setNewLoc(l=>({ ...l, latitude: Number(lat.toFixed(6)), longitude: Number(lon.toFixed(6)) }));
-                                     }}>
-                                  <div className="absolute inset-0 flex items-center justify-center">
-                                    <div className="relative">
-                                      <div className="w-3 h-3 rounded-full bg-red-600 shadow ring-2 ring-white/80 dark:ring-gray-900/80 cursor-pointer" title={t('dragToChangePosition')}
-                                        draggable
-                                        onDrag={(e)=>{
-                                          const parent = (e.target as HTMLDivElement).parentElement?.parentElement as HTMLDivElement;
-                                          if (!parent) return;
-                                          const rect = parent.getBoundingClientRect();
-                                          const relX = e.clientX - rect.left;
-                                          const relY = e.clientY - rect.top;
-                                          const lat = Number(newLoc.latitude) + ((relY - rect.height/2) / rect.height) * 0.01;
-                                          const lon = Number(newLoc.longitude) + ((relX - rect.width/2) / rect.width) * 0.01;
-                                          setNewLoc(l=>({ ...l, latitude: Number(lat.toFixed(6)), longitude: Number(lon.toFixed(6)) }));
-                                        }}
-                                      />
-                                      <div className="absolute -inset-10 rounded-full" style={{ backgroundColor: `rgba(30, 64, 175, ${Math.min(0.9, 0.2 + newLoc.radius/2000)})` }}></div>
-                                    </div>
-                                  </div>
-                                </div>
+                                <MapPicker
+                                  latitude={newLoc.latitude}
+                                  longitude={newLoc.longitude}
+                                  radius={newLoc.radius}
+                                  onChange={(lat,lng)=>setNewLoc(l=>({...l, latitude:Number(lat.toFixed(6)), longitude:Number(lng.toFixed(6))}))}
+                                />
                                 <div className="grid grid-cols-2 gap-2 mt-2">
                                   <input type="number" step="0.000001" value={newLoc.latitude} onChange={e=>setNewLoc(l=>({...l, latitude:Number(e.target.value)}))} className="px-3 py-2 rounded-md bg-white/70 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" placeholder={t('latitude')} />
                                   <input type="number" step="0.000001" value={newLoc.longitude} onChange={e=>setNewLoc(l=>({...l, longitude:Number(e.target.value)}))} className="px-3 py-2 rounded-md bg-white/70 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" placeholder={t('longitude')} />
                                 </div>
                                 <div className="mt-2">
                                   <button type="button" onClick={()=>{
-                                    navigator.geolocation.getCurrentPosition((pos)=>{
-                                      setNewLoc(l=>({ ...l, latitude: Number(pos.coords.latitude.toFixed(6)), longitude: Number(pos.coords.longitude.toFixed(6)) }));
-                                    }, ()=>showToast(t('geoLocationFailedToast'), 'warning'));
+                                    if (!('geolocation' in navigator)) {
+                                      showToast(t('locationError'), 'error');
+                                      return;
+                                    }
+                                    navigator.geolocation.getCurrentPosition(
+                                      (pos)=>{
+                                        setNewLoc(l=>({
+                                          ...l,
+                                          latitude: Number(pos.coords.latitude.toFixed(6)),
+                                          longitude: Number(pos.coords.longitude.toFixed(6))
+                                        }));
+                                      },
+                                      (error:any)=>{
+                                        const denied = error && (error.code === (navigator as any).geolocation?.PERMISSION_DENIED);
+                                        showToast(denied ? t('enableLocationPermission') : t('geoLocationFailedToast'), denied ? 'warning' : 'error');
+                                      },
+                                      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                                    );
                                   }} className="px-3 py-2 rounded-md bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600">{t('useMyLocation')}</button>
                                 </div>
                               </div>
                             </div>
+                            {/*
                             <div className="mt-4 flex justify-end">
-                              <button onClick={async()=>{
-                                if (!newLoc.name.trim()) return showToast(t('enterLocationNameToast'), 'warning');
-                                try {
-                                  const res = await api.post('/approved-locations', { name: newLoc.name, latitude: newLoc.latitude, longitude: newLoc.longitude, radius: newLoc.radius });
-                                  setLocations(prev => [...prev, { id: res.id, name: newLoc.name, latitude: newLoc.latitude, longitude: newLoc.longitude, radius: newLoc.radius }]);
-                                  showToast(t('locationSavedToast'), 'success');
-                                  setShowAddLoc(false);
-                                  setNewLoc({ id: 0, name: '', latitude: 24.7136, longitude: 46.6753, radius: 500 });
-                                } catch {
-                                  showToast(t('locationSaveFailedToast'), 'error');
-                                }
-                              }} className="px-4 py-2 rounded-md bg-gradient-to-r from-indigo-600 to-blue-500 text-white hover:from-indigo-700 hover:to-blue-600">{t('saveLocation')}</button>
+                              <button
+                                onClick={() => {
+                                  if (!newLoc.name.trim()) { showToast(t('enterLocationNameToast'), 'warning'); return; }
+                                  api.post('/approved-locations', { name: newLoc.name, latitude: newLoc.latitude, longitude: newLoc.longitude, radius: newLoc.radius })
+                                    .then((res) => {
+                                      setLocations(prev => [...prev, { id: res.id, name: newLoc.name, latitude: newLoc.latitude, longitude: newLoc.longitude, radius: newLoc.radius }]);
+                                      showToast(t('locationSavedToast'), 'success');
+                                      setShowAddLoc(false);
+                                      setNewLoc({ id: 0, name: '', latitude: 24.7136, longitude: 46.6753, radius: 500 });
+                                    })
+                                    .catch(() => { showToast(t('locationSaveFailedToast'), 'error'); });
+                                }}
+                                className="px-4 py-2 rounded-md bg-gradient-to-r from-indigo-600 to-blue-500 text-white hover:from-indigo-700 hover:to-blue-600"
+                              >
+                                {t('saveLocation')}
+                              </button>
                             </div>
+                            */}
                           </div>
                         )}
                         {!collapseLocations && (
@@ -3820,9 +3887,13 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div>
                             <label className="block text-sm mb-1">{t('autoGenDate')}</label>
-                            <select value={reportDraft.autoReportDay} onChange={e=>setReportDraft(d=>({...d, autoReportDay:Number(e.target.value)}))} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60">
-                              {Array.from({length:28}, (_,i)=>i+1).map(n=> <option key={n} value={n}>{n}</option>)}
-                            </select>
+                            <input
+                              type="date"
+                              value={(()=>{ const now=new Date(); const yyyy=now.getFullYear(); const mm=String(now.getMonth()+1).padStart(2,'0'); const dd=String(reportDraft.autoReportDay||1).padStart(2,'0'); return `${yyyy}-${mm}-${dd}`; })()}
+                              onChange={e=>{ try { const v=e.target.value; const d=new Date(v); const day=d.getDate(); if (!isNaN(day)) setReportDraft(prev=>({...prev, autoReportDay: day })); } catch {} }}
+                              className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60"
+                            />
+                            <p className="mt-1 text-xs text-gray-500">{t('autoGenDate')} — {t('everyMonthOnDay')} {reportDraft.autoReportDay}</p>
                           </div>
                           <div className="space-y-2">
                             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={reportDraft.reportIncludeLateList} onChange={e=>setReportDraft(d=>({...d, reportIncludeLateList:e.target.checked}))} /><span>{t('includeLateList')}</span></label>
