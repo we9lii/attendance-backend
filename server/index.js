@@ -71,6 +71,8 @@ async function initTables() {
       password_hash VARCHAR(255) NOT NULL,
       role ENUM('admin','employee') NOT NULL DEFAULT 'employee',
       department VARCHAR(255) NULL,
+      phone VARCHAR(50) NULL,
+      email VARCHAR(255) NULL,
       active TINYINT(1) NOT NULL DEFAULT 1,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       INDEX(role), INDEX(active)
@@ -148,6 +150,9 @@ async function initTables() {
     try {
       await conn.query('ALTER TABLE chat_messages CHANGE COLUMN `read` `is_read` TINYINT(1) NOT NULL DEFAULT 0');
     } catch (e) { /* ignore if column doesn't exist */ }
+    // Add phone/email to users if missing
+    try { await conn.query('ALTER TABLE users ADD COLUMN phone VARCHAR(50) NULL'); } catch (e) { /* ignore */ }
+    try { await conn.query('ALTER TABLE users ADD COLUMN email VARCHAR(255) NULL'); } catch (e) { /* ignore */ }
   } finally {
     conn.release();
   }
@@ -383,7 +388,7 @@ app.get('/api/users', optionalAuthForUsers, async (req, res) => {
     }
     const conn = await pool.getConnection();
     try {
-      const [rows] = await conn.query('SELECT id, name, username, role, department, active FROM users ORDER BY id ASC');
+      const [rows] = await conn.query('SELECT id, name, username, role, department, phone, email, active, created_at FROM users ORDER BY id ASC');
       res.json(rows);
     } finally { conn.release(); }
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
@@ -391,7 +396,7 @@ app.get('/api/users', optionalAuthForUsers, async (req, res) => {
 
 app.post('/api/users', requireAdmin, async (req, res) => {
   try {
-    const { name, username, password, role, department } = req.body || {};
+    const { name, username, password, role, department, phone, email } = req.body || {};
     if (!name || !username || !password) return res.status(400).json({ error: 'Missing name/username/password' });
     const r = String(role || 'employee');
     if (!['admin','employee'].includes(r)) return res.status(400).json({ error: 'Invalid role' });
@@ -403,6 +408,8 @@ app.post('/api/users', requireAdmin, async (req, res) => {
         username,
         role: r,
         department: department || null,
+        phone: phone || null,
+        email: email || null,
         active: 1,
       };
       localUsers.push(user);
@@ -413,8 +420,8 @@ app.post('/api/users', requireAdmin, async (req, res) => {
     const hash = await bcrypt.hash(String(password), 10);
     const conn = await pool.getConnection();
     try {
-      await conn.query('INSERT INTO users (name, username, password_hash, role, department) VALUES (?, ?, ?, ?, ?)', [name, username, hash, r, department || null]);
-      const [rows] = await conn.query('SELECT id, name, username, role, department, active FROM users WHERE username = ?', [username]);
+      await conn.query('INSERT INTO users (name, username, password_hash, role, department, phone, email) VALUES (?, ?, ?, ?, ?, ?, ?)', [name, username, hash, r, department || null, phone || null, email || null]);
+      const [rows] = await conn.query('SELECT id, name, username, role, department, phone, email, active, created_at FROM users WHERE username = ?', [username]);
       const user = Array.isArray(rows) ? rows[0] : null;
       res.json(user || { ok: true });
     } finally { conn.release(); }
@@ -424,7 +431,7 @@ app.post('/api/users', requireAdmin, async (req, res) => {
 app.put('/api/users/:id', requireAdmin, async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { name, department, role, active, password } = req.body || {};
+    const { name, department, role, active, password, phone, email } = req.body || {};
     const conn = await pool.getConnection();
     try {
       if (password) {
@@ -436,12 +443,14 @@ app.put('/api/users/:id', requireAdmin, async (req, res) => {
       const values = [];
       if (name !== undefined) { fields.push('name = ?'); values.push(name); }
       if (department !== undefined) { fields.push('department = ?'); values.push(department); }
+      if (phone !== undefined) { fields.push('phone = ?'); values.push(phone); }
+      if (email !== undefined) { fields.push('email = ?'); values.push(email); }
       if (role !== undefined && ['admin','employee'].includes(String(role))) { fields.push('role = ?'); values.push(String(role)); }
       if (active !== undefined) { fields.push('active = ?'); values.push(Number(!!active)); }
       if (fields.length) {
         await conn.query(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, [...values, id]);
       }
-      const [rows] = await conn.query('SELECT id, name, username, role, department, active FROM users WHERE id = ?', [id]);
+      const [rows] = await conn.query('SELECT id, name, username, role, department, phone, email, active, created_at FROM users WHERE id = ?', [id]);
       res.json(Array.isArray(rows) ? rows[0] : { ok: true });
     } finally { conn.release(); }
   } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
@@ -875,6 +884,49 @@ function scheduleDailyReminders() {
   }, 30000); // check every 30 seconds
 }
 
+// Absence alerts at 08:45: notify admins with list of absentees and remind absent employees
+let lastAbsenceAlertDate = null; // YYYY-MM-DD string
+async function getAbsenteesForToday() {
+  const today = new Date();
+  const dateStr = today.toISOString().slice(0, 10);
+  const [userRows] = await pool.query("SELECT id, name FROM users WHERE role='employee' AND active=1");
+  const [attRows] = await pool.query("SELECT DISTINCT user_id FROM attendance_logs WHERE DATE(check_in)=?", [dateStr]);
+  const presentSet = new Set(Array.isArray(attRows) ? attRows.map(r => Number(r.user_id)) : []);
+  const absentees = (Array.isArray(userRows) ? userRows : []).filter(u => !presentSet.has(Number(u.id)));
+  return absentees;
+}
+function scheduleAbsenceAlerts() {
+  setInterval(async () => {
+    if (!DB_AVAILABLE) return;
+    const now = new Date();
+    const dayStr = now.toISOString().slice(0,10);
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    if (hours === 8 && minutes === 45 && lastAbsenceAlertDate !== dayStr) {
+      lastAbsenceAlertDate = dayStr;
+      try {
+        const absentees = await getAbsenteesForToday();
+        // Notify admins with list of names
+        const [adminRows] = await pool.query("SELECT id FROM users WHERE role='admin' AND active=1");
+        const adminIds = (Array.isArray(adminRows) ? adminRows.map(r => Number(r.id)) : []);
+        const names = absentees.map(a => a.name).join(', ') || 'لا يوجد غياب';
+        const adminTitle = 'قائمة الغائبين اليوم';
+        const adminMsg = `الأسماء: ${names}`;
+        await pool.query('INSERT INTO notifications (title, message, target_user_ids, is_read) VALUES (?,?,?,?)', [adminTitle, adminMsg, adminIds.length ? adminIds.join(',') : null, 0]);
+        // Notify each absent employee to check-in
+        for (const emp of absentees) {
+          const empTitle = 'تذكير تسجيل حضور';
+          const empMsg = 'يرجى تسجيل حضورك الآن.';
+          await pool.query('INSERT INTO notifications (title, message, target_user_ids, is_read) VALUES (?,?,?,?)', [empTitle, empMsg, String(emp.id), 0]);
+        }
+        console.log('Absence alerts created for', absentees.length, 'employees');
+      } catch (e) {
+        console.error('Failed to create absence alerts', e);
+      }
+    }
+  }, 30000);
+}
+
 // Serve frontend production build (SPA) from ../dist
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -907,6 +959,8 @@ initTables()
     });
     // Start daily reminders scheduler when DB is available
     scheduleDailyReminders();
+    // Start absence alerts scheduler (08:45)
+    scheduleAbsenceAlerts();
   })
   .catch(err => {
     DB_AVAILABLE = false;

@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { User, ApprovedLocation, AttendanceRecord, Request, Notification, ChatMessage, SystemSettings } from './types';
 import { UserRole, RequestType, RequestStatus } from './types';
 import {
@@ -317,10 +317,14 @@ const I18N: Record<Lang, Record<string, string>> = {
     usernameLabelGeneric: 'اسم المستخدم',
     passwordLabelGeneric: 'كلمة المرور',
     departmentLabelGeneric: 'القسم (اختياري)',
+    phoneLabelGeneric: 'رقم الجوال (اختياري)',
+    emailLabelGeneric: 'البريد الإلكتروني (اختياري)',
     createAccountAction: 'إنشاء الحساب',
     usersTableTitle: 'قائمة المستخدمين',
     roleColGeneric: 'الدور',
     departmentColGeneric: 'القسم',
+    phoneColGeneric: 'الجوال',
+    emailColGeneric: 'البريد الإلكتروني',
     createdAtColGeneric: 'تاريخ الإنشاء',
     accountCreatedToast: 'تم إنشاء الحساب بنجاح',
     accountSaveFailedToast: 'تعذر إنشاء الحساب. تحقق من الخادم.',
@@ -600,10 +604,14 @@ const I18N: Record<Lang, Record<string, string>> = {
     usernameLabelGeneric: 'Username',
     passwordLabelGeneric: 'Password',
     departmentLabelGeneric: 'Department (optional)',
+    phoneLabelGeneric: 'Phone (optional)',
+    emailLabelGeneric: 'Email (optional)',
     createAccountAction: 'Create Account',
     usersTableTitle: 'Users List',
     roleColGeneric: 'Role',
     departmentColGeneric: 'Department',
+    phoneColGeneric: 'Phone',
+    emailColGeneric: 'Email',
     createdAtColGeneric: 'Created At',
     accountCreatedToast: 'Account created successfully',
     accountSaveFailedToast: 'Failed to create account. Check the server.',
@@ -912,7 +920,7 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const defaultSettings: SystemSettings = {
     attendanceStartTime: '08:00',
-    latestAllowedTime: '08:15',
+    latestAllowedTime: '08:00',
     allowedLatenessPerMonthBeforeReason: 3,
     morningReminderEnabled: true,
     morningReminderTime: '07:50',
@@ -1090,6 +1098,9 @@ export default function App() {
           name: String(e.name || 'موظف'),
           role: String(e.role).toLowerCase() === 'admin' ? UserRole.ADMIN : UserRole.EMPLOYEE,
           department: String(e.department || 'غير محدد'),
+          phone: e.phone ? String(e.phone) : undefined,
+          email: e.email ? String(e.email) : undefined,
+          createdAt: e.created_at ? new Date(e.created_at).toISOString() : undefined,
         }));
 
         setUsers(employees);
@@ -1246,6 +1257,13 @@ export default function App() {
         settings={settings}
         saveSettings={saveSettings}
         lang={lang}
+        detailOpen={detailOpen}
+        setDetailOpen={setDetailOpen}
+        detailType={detailType}
+        detailDateIso={detailDateIso}
+        setDetailDateIso={setDetailDateIso}
+        detailRecords={detailRecords}
+        loadDetailsForDay={loadDetailsForDay}
       />
     );
   }
@@ -1846,6 +1864,14 @@ interface AdminDashboardProps {
     settings: SystemSettings;
     saveSettings: (next: Partial<SystemSettings>) => void;
     lang: Lang;
+    // تفاصيل اليوم - تُمرّر من المكوّن الأعلى
+    detailOpen: boolean;
+    setDetailOpen: React.Dispatch<React.SetStateAction<boolean>>;
+    detailType: 'PRESENT'|'LATE'|'ABSENT'|'NONE';
+    detailDateIso: string;
+    setDetailDateIso: React.Dispatch<React.SetStateAction<string>>;
+    detailRecords: AttendanceRecord[];
+    loadDetailsForDay: (kind: 'PRESENT'|'LATE'|'ABSENT') => void;
 }
 
 const HeatmapCalendar: React.FC<{ absenceData: Map<string, number>; lang: Lang }> = ({ absenceData, lang }) => {
@@ -1892,7 +1918,7 @@ const HeatmapCalendar: React.FC<{ absenceData: Map<string, number>; lang: Lang }
 };
 
 const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
-    const { users, setUsers, attendance, requests, setRequests, locations, setLocations, notifications, setNotifications, chatMessages, setChatMessages, showToast, currentUser, setCurrentUser, settings, saveSettings, lang } = props;
+    const { users, setUsers, attendance, requests, setRequests, locations, setLocations, notifications, setNotifications, chatMessages, setChatMessages, showToast, currentUser, setCurrentUser, settings, saveSettings, lang, detailOpen, setDetailOpen, detailType, detailDateIso, setDetailDateIso, detailRecords, loadDetailsForDay } = props;
     const t = useI18n(lang);
     const locale = lang === 'ar' ? 'ar-EG' : 'en-US';
     const [activeTab, setActiveTab] = useState('summary');
@@ -1948,15 +1974,27 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
     const [newAdminUsername, setNewAdminUsername] = useState('');
     const [newAdminPassword, setNewAdminPassword] = useState('');
     const [newAdminDepartment, setNewAdminDepartment] = useState('');
+    const [newAdminPhone, setNewAdminPhone] = useState('');
+    const [newAdminEmail, setNewAdminEmail] = useState('');
     const [newEmpName, setNewEmpName] = useState('');
     const [newEmpUsername, setNewEmpUsername] = useState('');
     const [newEmpPassword, setNewEmpPassword] = useState('');
     const [newEmpDepartment, setNewEmpDepartment] = useState('');
+    const [newEmpPhone, setNewEmpPhone] = useState('');
+    const [newEmpEmail, setNewEmpEmail] = useState('');
 
-    const createUser = async (role: 'admin'|'employee', payload: { name: string; username: string; password: string; department?: string; }) => {
+    const createUser = async (role: 'admin'|'employee', payload: { name: string; username: string; password: string; department?: string; phone?: string; email?: string; }) => {
       try {
         const res = await api.post('/users', { ...payload, role });
-        const mapped = { id: res.id, name: res.name, role: (res.role === 'admin' ? UserRole.ADMIN : UserRole.EMPLOYEE), department: res.department || '' } as User;
+        const mapped = {
+          id: res.id,
+          name: res.name,
+          role: (res.role === 'admin' ? UserRole.ADMIN : UserRole.EMPLOYEE),
+          department: res.department || '',
+          phone: res.phone || undefined,
+          email: res.email || undefined,
+          createdAt: res.created_at ? new Date(res.created_at).toISOString() : undefined,
+        } as User;
         setUsers(prev => [...prev, mapped]);
         showToast(t('accountCreatedToast'), 'success');
       } catch {
@@ -2061,6 +2099,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
     };
 
     const employeeUsers = users.filter(u => u.role === UserRole.EMPLOYEE);
+    // حساب قائمة الغياب يعتمد على الحضور الفعلي من سجلات attendance لليوم الحالي
+    // لتفادي الاعتماد على متغير خارج نطاق هذا المكوّن (detailRecords)
+    const absentList = useMemo(() => {
+      const todayStr = new Date().toDateString();
+      const presentIdsToday = new Set(
+        attendance
+          .filter(a => new Date(a.checkIn).toDateString() === todayStr)
+          .map(a => a.userId)
+      );
+      return employeeUsers.filter(u => !presentIdsToday.has(u.id));
+    }, [attendance, employeeUsers]);
     
     // Summary calculations
     const todayString = new Date().toDateString();
@@ -2556,32 +2605,25 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
     };
 
     const StatCard: React.FC<{ title: string; value: string | number; icon: React.ReactNode; onClick?: () => void; variant?: 'emerald' | 'amber' | 'rose' }> = ({ title, value, icon, onClick, variant = 'emerald' }) => {
-        const borderGrad = variant === 'emerald'
-          ? 'from-emerald-400 via-teal-400 to-cyan-400'
+        const headerGrad = variant === 'emerald'
+          ? 'from-emerald-600 to-teal-500'
           : variant === 'amber'
-          ? 'from-amber-400 via-orange-400 to-yellow-400'
-          : 'from-rose-400 via-pink-400 to-fuchsia-400';
-        const hoverBg = variant === 'emerald'
-          ? 'hover:bg-emerald-50/60 dark:hover:bg-emerald-900/20'
-          : variant === 'amber'
-          ? 'hover:bg-amber-50/60 dark:hover:bg-amber-900/20'
-          : 'hover:bg-rose-50/60 dark:hover:bg-rose-900/20';
+          ? 'from-amber-600 to-orange-500'
+          : 'from-rose-600 to-pink-500';
+        const hoverLift = 'hover:shadow-lg hover:-translate-y-0.5';
         return (
           <button
             type="button"
             onClick={onClick}
-            className={`w-full text-left relative bg-white/70 dark:bg-gray-800/70 backdrop-blur p-6 rounded-xl shadow-md flex items-start justify-between ring-1 ring-gray-200/60 dark:ring-gray-700/60 transition ${hoverBg}`}
+            className={`w-full text-left bg-white/80 dark:bg-gray-800/70 backdrop-blur rounded-xl shadow-md ring-1 ring-gray-200/60 dark:ring-gray-700/60 overflow-hidden transition ${hoverLift}`}
           >
-            <span className={`absolute inset-0 -z-0 rounded-xl pointer-events-none`}
-              aria-hidden="true"
-            >
-              <span className={`absolute inset-0 rounded-xl p-[1px] bg-gradient-to-r ${borderGrad}`}></span>
-            </span>
-            <div className="relative z-10">
-                <p className="text-sm text-gray-500 dark:text-gray-400">{title}</p>
-                <p className="text-3xl font-bold text-gray-800 dark:text-white">{value}</p>
+            <div className={`px-5 py-3.5 bg-gradient-to-r ${headerGrad} text-white flex items-center justify-between shadow-sm`}> 
+              <span className="text-sm font-semibold tracking-wide">{title}</span>
+              <div className="p-2 rounded-md bg-white/10 ring-1 ring-white/20">{icon}</div>
             </div>
-            <div className="relative z-10 p-3.5 rounded-full bg-gradient-to-br from-white/50 to-transparent dark:from-gray-900/30 ring-1 ring-gray-200/50 dark:ring-gray-700/50">{icon}</div>
+            <div className="px-6 py-5 flex items-baseline justify-between">
+              <p className="text-3xl font-bold text-gray-800 dark:text-white">{value}</p>
+            </div>
           </button>
         );
     };
@@ -2622,124 +2664,110 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                 {activeTab === 'summary' && (
                     <div className="space-y-6 animate-fade-in">
                         {/* تفاصيل اليوم - النافذة والنطاق */}
-                        {(() => {
-                          const presentIds = new Set(detailRecords.map(r => r.userId));
-                          const lateIds = new Set(detailRecords.filter(r => r.isLate).map(r => r.userId));
-                          const absentList = employeeUsers.filter(u => !presentIds.has(u.id));
+                        {/* واجهة البطاقات القابلة للنقر */}
+                        <div className="rounded-2xl ring-1 ring-gray-200/60 dark:ring-gray-700/60 bg-white/70 dark:bg-gray-800/60 backdrop-blur p-4">
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                           <StatCard
+                             title="إجمالي الحضور اليوم"
+                             value={totalAttendanceToday}
+                             icon={<CheckBadgeIcon className="w-7 h-7 text-white"/>}
+                             variant="emerald"
+                             onClick={() => loadDetailsForDay('PRESENT')}
+                           />
+                           <StatCard
+                             title="متأخرون اليوم"
+                             value={totalLateToday}
+                             icon={<ClockIcon className="w-7 h-7 text-white"/>}
+                             variant="amber"
+                             onClick={() => loadDetailsForDay('LATE')}
+                           />
+                           <StatCard
+                             title="غياب اليوم"
+                             value={absentToday < 0 ? 0 : absentToday}
+                             icon={<UserRemoveIcon className="w-7 h-7 text-white"/>}
+                             variant="rose"
+                             onClick={() => loadDetailsForDay('ABSENT')}
+                           />
+                           <button
+                            onClick={() => {
+                              const now = new Date();
+                              const first = new Date(now.getFullYear(), now.getMonth(), 1);
+                              const last = new Date(now.getFullYear(), now.getMonth()+1, 0);
+                              const toIsoDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+                              setReportStartDate(toIsoDate(first));
+                              setReportEndDate(toIsoDate(last));
+                              setReportScope('ALL');
+                              setReportType('ATTENDANCE_TIMES');
+                              setActiveTab('reports');
+                            }}
+                            className="bg-gradient-to-r from-blue-600 to-indigo-500 text-white rounded-xl shadow-md flex flex-col items-center justify-center p-6 hover:from-blue-700 hover:to-indigo-600 transition-colors"
+                          >
+                            <DocumentTextIcon className="w-8 h-8 mb-2" />
+                            <span className="font-bold">عرض التقرير الشهري</span>
+                            <span className="text-xs">مباشر من قاعدة البيانات</span>
+                          </button>
+                          </div>
+                        </div>
 
-                          // واجهة البطاقات القابلة للنقر
-                          const Cards = (
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                              <StatCard
-                                title="إجمالي الحضور اليوم"
-                                value={totalAttendanceToday}
-                                icon={<CheckBadgeIcon className="w-7 h-7 text-emerald-600 dark:text-emerald-400"/>}
-                                variant="emerald"
-                                onClick={() => loadDetailsForDay('PRESENT')}
-                              />
-                              <StatCard
-                                title="متأخرون اليوم"
-                                value={totalLateToday}
-                                icon={<ClockIcon className="w-7 h-7 text-amber-600 dark:text-amber-400"/>}
-                                variant="amber"
-                                onClick={() => loadDetailsForDay('LATE')}
-                              />
-                              <StatCard
-                                title="غياب اليوم"
-                                value={absentToday < 0 ? 0 : absentToday}
-                                icon={<UserRemoveIcon className="w-7 h-7 text-rose-600 dark:text-rose-400"/>}
-                                variant="rose"
-                                onClick={() => loadDetailsForDay('ABSENT')}
-                              />
-                              <button
-                                onClick={() => {
-                                  // انتقال لتقرير شهري فعلي بناءً على البيانات من القاعدة
-                                  const now = new Date();
-                                  const first = new Date(now.getFullYear(), now.getMonth(), 1);
-                                  const last = new Date(now.getFullYear(), now.getMonth()+1, 0);
-                                  const toIsoDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-                                  setReportStartDate(toIsoDate(first));
-                                  setReportEndDate(toIsoDate(last));
-                                  setReportScope('ALL');
-                                  setReportType('ATTENDANCE_TIMES');
-                                  setActiveTab('reports');
-                                }}
-                                className="bg-gradient-to-r from-blue-600 to-indigo-500 text-white rounded-xl shadow-md flex flex-col items-center justify-center p-6 hover:from-blue-700 hover:to-indigo-600 transition-colors"
-                              >
-                                <DocumentTextIcon className="w-8 h-8 mb-2" />
-                                <span className="font-bold">عرض التقرير الشهري</span>
-                                <span className="text-xs">مباشر من قاعدة البيانات</span>
-                              </button>
-                            </div>
-                          );
-
-                          // واجهة النافذة المنبثقة للتفاصيل اليومية
-                          const DetailModal = detailOpen ? (
-                            <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur p-5 rounded-xl ring-1 ring-gray-200/60 dark:ring-gray-700/60 shadow-md">
-                              <div className="flex items-center justify-between mb-3">
-                                <div className="flex items-center gap-3">
-                                  {detailType === 'PRESENT' && <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"><CheckBadgeIcon className="w-4 h-4"/>حضور اليوم</span>}
-                                  {detailType === 'LATE' && <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm bg-amber-50 text-amber-700 ring-1 ring-amber-200"><ClockIcon className="w-4 h-4"/>متأخرون اليوم</span>}
-                                  {detailType === 'ABSENT' && <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm bg-rose-50 text-rose-700 ring-1 ring-rose-200"><UserRemoveIcon className="w-4 h-4"/>غياب اليوم</span>}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <input type="date" value={detailDateIso} onChange={e=>setDetailDateIso(e.target.value)} className="px-2 py-1 rounded-md bg-white/70 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60 text-sm"/>
-                                  <button onClick={()=>loadDetailsForDay(detailType as any)} className="px-2.5 py-1.5 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700">تحديث</button>
-                                  <button onClick={()=>setDetailOpen(false)} className="px-2.5 py-1.5 rounded-md bg-gray-200 text-gray-800 text-sm hover:bg-gray-300">إغلاق</button>
-                                </div>
+                        {/* واجهة النافذة المنبثقة للتفاصيل اليومية */}
+                        {detailOpen ? (
+                          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur p-5 rounded-xl ring-1 ring-gray-200/60 dark:ring-gray-700/60 shadow-md">
+                            <div className="flex items-center justify-between mb-3">
+                              <div className="flex items-center gap-3">
+                                {detailType === 'PRESENT' && <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"><CheckBadgeIcon className="w-4 h-4"/>حضور اليوم</span>}
+                                {detailType === 'LATE' && <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm bg-amber-50 text-amber-700 ring-1 ring-amber-200"><ClockIcon className="w-4 h-4"/>متأخرون اليوم</span>}
+                                {detailType === 'ABSENT' && <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-sm bg-rose-50 text-rose-700 ring-1 ring-rose-200"><UserRemoveIcon className="w-4 h-4"/>غياب اليوم</span>}
                               </div>
-
-                              {detailType !== 'ABSENT' && (
-                                <div className="overflow-x-auto">
-                                  <table className="w-full text-sm">
-                                    <thead className="text-xs text-gray-800 dark:text-gray-100 bg-gradient-to-r from-indigo-50 via-blue-50 to-cyan-50 dark:from-indigo-900/50 dark:via-blue-900/50 dark:to-cyan-900/50">
-                                      <tr>
-                                        <th className="px-3 py-2">الموظف</th>
-                                        <th className="px-3 py-2">وقت الحضور</th>
-                                        <th className="px-3 py-2">متأخر؟</th>
-                                        <th className="px-3 py-2">دقائق التأخير</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {detailRecords.map(r => {
-                                        const u = users.find(u=>u.id===r.userId);
-                                        return (
-                                          <tr key={r.id} className="border-b dark:border-gray-700 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/20 transition-colors">
-                                            <td className="px-3 py-2">{u?.name || `#${r.userId}`}</td>
-                                            <td className="px-3 py-2">{formatTime(r.checkIn)}</td>
-                                            <td className="px-3 py-2">{r.isLate ? 'نعم' : 'لا'}</td>
-                                            <td className="px-3 py-2">{r.isLate ? r.lateMinutes : 0}</td>
-                                          </tr>
-                                        );
-                                      })}
-                                      {detailRecords.length === 0 && (
-                                        <tr><td className="px-3 py-3 text-center" colSpan={4}>لا توجد بيانات متاحة لليوم المحدد.</td></tr>
-                                      )}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              )}
-
-                              {detailType === 'ABSENT' && (
-                                <div className="flex flex-wrap gap-2">
-                                  {absentList.map(u => (
-                                    <span key={u.id} className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-xs bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-200 dark:ring-rose-800">
-                                      {u.name}
-                                    </span>
-                                  ))}
-                                  {absentList.length === 0 && <div className="text-sm">لا يوجد غياب في هذا اليوم.</div>}
-                                </div>
-                              )}
+                              <div className="flex items-center gap-2">
+                                <input type="date" value={detailDateIso} onChange={e=>setDetailDateIso(e.target.value)} className="px-2 py-1 rounded-md bg-white/70 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60 text-sm"/>
+                                <button onClick={()=>loadDetailsForDay(detailType as any)} className="px-2.5 py-1.5 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700">تحديث</button>
+                                <button onClick={()=>setDetailOpen(false)} className="px-2.5 py-1.5 rounded-md bg-gray-200 text-gray-800 text-sm hover:bg-gray-300">إغلاق</button>
+                              </div>
                             </div>
-                          ) : null;
 
-                          return (
-                            <>
-                              {Cards}
-                              {DetailModal}
-                            </>
-                          );
-                        })()}
+                            {detailType !== 'ABSENT' && (
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                  <thead className="text-xs text-gray-800 dark:text-gray-100 bg-gradient-to-r from-indigo-50 via-blue-50 to-cyan-50 dark:from-indigo-900/50 dark:via-blue-900/50 dark:to-cyan-900/50">
+                                    <tr>
+                                      <th className="px-3 py-2">الموظف</th>
+                                      <th className="px-3 py-2">وقت الحضور</th>
+                                      <th className="px-3 py-2">متأخر؟</th>
+                                      <th className="px-3 py-2">دقائق التأخير</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {detailRecords.map(r => {
+                                      const u = users.find(u=>u.id===r.userId);
+                                      return (
+                                        <tr key={r.id} className="border-b dark:border-gray-700 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/20 transition-colors">
+                                          <td className="px-3 py-2">{u?.name || `#${r.userId}`}</td>
+                                          <td className="px-3 py-2">{formatTime(r.checkIn)}</td>
+                                          <td className="px-3 py-2">{r.isLate ? 'نعم' : 'لا'}</td>
+                                          <td className="px-3 py-2">{r.isLate ? r.lateMinutes : 0}</td>
+                                        </tr>
+                                      );
+                                    })}
+                                    {detailRecords.length === 0 && (
+                                      <tr><td className="px-3 py-3 text-center" colSpan={4}>لا توجد بيانات متاحة لليوم المحدد.</td></tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+
+                            {detailType === 'ABSENT' && (
+                              <div className="flex flex-wrap gap-2">
+                                {absentList.map(u => (
+                                  <span key={u.id} className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-xs bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-200 dark:ring-rose-800">
+                                    {u.name}
+                                  </span>
+                                ))}
+                                {absentList.length === 0 && <div className="text-sm">لا يوجد غياب في هذا اليوم.</div>}
+                              </div>
+                            )}
+                          </div>
+                        ) : null}
                     </div>
                 )}
                 {activeTab === 'analytics' && (
@@ -3482,15 +3510,23 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                    <label className="block text-sm mb-1">{t('passwordLabelGeneric')}</label>
                                    <input type="password" value={newAdminPassword} onChange={e=>setNewAdminPassword(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
                                  </div>
-                                 <div>
-                                   <label className="block text-sm mb-1">{t('departmentLabelGeneric')}</label>
-                                   <input value={newAdminDepartment} onChange={e=>setNewAdminDepartment(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
-                                 </div>
+                               <div>
+                                 <label className="block text-sm mb-1">{t('departmentLabelGeneric')}</label>
+                                 <input value={newAdminDepartment} onChange={e=>setNewAdminDepartment(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
                                </div>
-                               <div className="mt-4 flex justify-end">
-                                 <button onClick={async()=>{ if (!newAdminName.trim() || !newAdminUsername.trim() || !newAdminPassword.trim()) return; await createUser('admin', { name: newAdminName, username: newAdminUsername, password: newAdminPassword, department: newAdminDepartment }); setNewAdminName(''); setNewAdminUsername(''); setNewAdminPassword(''); setNewAdminDepartment(''); }} className="px-4 py-2 rounded-md bg-gradient-to-r from-emerald-600 to-teal-500 text-white hover:from-emerald-700 hover:to-teal-600">{t('createAccountAction')}</button>
-                               </div>
-                             </div>
+                                <div>
+                                  <label className="block text-sm mb-1">{t('phoneLabelGeneric')}</label>
+                                  <input value={newAdminPhone} onChange={e=>setNewAdminPhone(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                </div>
+                                <div>
+                                  <label className="block text-sm mb-1">{t('emailLabelGeneric')}</label>
+                                  <input type="email" value={newAdminEmail} onChange={e=>setNewAdminEmail(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                                </div>
+                              </div>
+                              <div className="mt-4 flex justify-end">
+                                <button onClick={async()=>{ if (!newAdminName.trim() || !newAdminUsername.trim() || !newAdminPassword.trim()) return; await createUser('admin', { name: newAdminName, username: newAdminUsername, password: newAdminPassword, department: newAdminDepartment, phone: newAdminPhone || undefined, email: newAdminEmail || undefined }); setNewAdminName(''); setNewAdminUsername(''); setNewAdminPassword(''); setNewAdminDepartment(''); setNewAdminPhone(''); setNewAdminEmail(''); }} className="px-4 py-2 rounded-md bg-gradient-to-r from-emerald-600 to-teal-500 text-white hover:from-emerald-700 hover:to-teal-600">{t('createAccountAction')}</button>
+                              </div>
+                            </div>
 
                              <div className="p-4 rounded-xl ring-1 ring-gray-200/60 dark:ring-gray-700/60 bg-white/60 dark:bg-gray-800/60">
                                <h3 className="text-lg font-semibold mb-3">{t('createEmployeeTitle')}</h3>
@@ -3507,44 +3543,56 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                    <label className="block text-sm mb-1">{t('passwordLabelGeneric')}</label>
                                    <input type="password" value={newEmpPassword} onChange={e=>setNewEmpPassword(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
                                  </div>
-                                 <div>
-                                   <label className="block text-sm mb-1">{t('departmentLabelGeneric')}</label>
-                                   <input value={newEmpDepartment} onChange={e=>setNewEmpDepartment(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
-                                 </div>
+                               <div>
+                                 <label className="block text-sm mb-1">{t('departmentLabelGeneric')}</label>
+                                 <input value={newEmpDepartment} onChange={e=>setNewEmpDepartment(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
                                </div>
-                               <div className="mt-4 flex justify-end">
-                                 <button onClick={async()=>{ if (!newEmpName.trim() || !newEmpUsername.trim() || !newEmpPassword.trim()) return; await createUser('employee', { name: newEmpName, username: newEmpUsername, password: newEmpPassword, department: newEmpDepartment }); setNewEmpName(''); setNewEmpUsername(''); setNewEmpPassword(''); setNewEmpDepartment(''); }} className="px-4 py-2 rounded-md bg-gradient-to-r from-indigo-600 to-blue-500 text-white hover:from-indigo-700 hover:to-blue-600">{t('createAccountAction')}</button>
+                               <div>
+                                 <label className="block text-sm mb-1">{t('phoneLabelGeneric')}</label>
+                                 <input value={newEmpPhone} onChange={e=>setNewEmpPhone(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
                                </div>
-                             </div>
-                           </div>
+                               <div>
+                                 <label className="block text-sm mb-1">{t('emailLabelGeneric')}</label>
+                                 <input type="email" value={newEmpEmail} onChange={e=>setNewEmpEmail(e.target.value)} className="w-full px-3 py-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60" />
+                               </div>
+                              </div>
+                              <div className="mt-4 flex justify-end">
+                                <button onClick={async()=>{ if (!newEmpName.trim() || !newEmpUsername.trim() || !newEmpPassword.trim()) return; await createUser('employee', { name: newEmpName, username: newEmpUsername, password: newEmpPassword, department: newEmpDepartment, phone: newEmpPhone || undefined, email: newEmpEmail || undefined }); setNewEmpName(''); setNewEmpUsername(''); setNewEmpPassword(''); setNewEmpDepartment(''); setNewEmpPhone(''); setNewEmpEmail(''); }} className="px-4 py-2 rounded-md bg-gradient-to-r from-indigo-600 to-blue-500 text-white hover:from-indigo-700 hover:to-blue-600">{t('createAccountAction')}</button>
+                              </div>
+                            </div>
+                          </div>
 
                            <div className="mt-6">
                              <h3 className="text-lg font-semibold mb-3">{t('usersTableTitle')}</h3>
                              <table className="w-full text-sm">
-                               <thead className="text-xs text-gray-800 dark:text-gray-100 bg-gradient-to-r from-violet-50 via-fuchsia-50 to-pink-50 dark:from-violet-900/50 dark:via-fuchsia-900/50 dark:to-pink-900/50">
-                                 <tr>
-                                   <th className="px-3 py-2">{t('nameCol')}</th>
-                                   <th className="px-3 py-2">{t('roleColGeneric')}</th>
-                                   <th className="px-3 py-2">{t('departmentColGeneric')}</th>
-                                   <th className="px-3 py-2">{t('createdAtColGeneric')}</th>
-                                   <th className="px-3 py-2">{t('actionsCol')}</th>
-                                 </tr>
-                               </thead>
-                               <tbody>
-                                 {users.map(u => (
-                                   <tr key={u.id} className="border-b border-gray-100 dark:border-gray-700">
-                                     <td className="px-3 py-2">{u.name}</td>
-                                     <td className="px-3 py-2">{u.role === UserRole.ADMIN ? t('admin') : t('employee')}</td>
-                                     <td className="px-3 py-2">{u.department || '—'}</td>
-                                     <td className="px-3 py-2">{'—'}</td>
-                                     <td className="px-3 py-2 flex gap-2">
-                                       <button onClick={async()=>{ try { await api.delete(`/users/${u.id}`); setUsers(prev => prev.filter(x => x.id !== u.id)); showToast(t('userDeletedToast'), 'success'); } catch { showToast(t('userDeleteFailedToast'), 'error'); } }} className="px-3 py-1 rounded-md bg-gradient-to-r from-rose-600 to-pink-500 text-white hover:from-rose-700 hover:to-pink-600">{t('delete')}</button>
-                                     </td>
-                                   </tr>
-                                 ))}
-                               </tbody>
-                             </table>
-                           </div>
+                             <thead className="text-xs text-gray-800 dark:text-gray-100 bg-gradient-to-r from-violet-50 via-fuchsia-50 to-pink-50 dark:from-violet-900/50 dark:via-fuchsia-900/50 dark:to-pink-900/50">
+                               <tr>
+                                 <th className="px-3 py-2">{t('nameCol')}</th>
+                                 <th className="px-3 py-2">{t('roleColGeneric')}</th>
+                                 <th className="px-3 py-2">{t('departmentColGeneric')}</th>
+                                 <th className="px-3 py-2">{t('phoneColGeneric')}</th>
+                                 <th className="px-3 py-2">{t('emailColGeneric')}</th>
+                                 <th className="px-3 py-2">{t('createdAtColGeneric')}</th>
+                                 <th className="px-3 py-2">{t('actionsCol')}</th>
+                               </tr>
+                             </thead>
+                             <tbody>
+                               {users.map(u => (
+                                 <tr key={u.id} className="border-b border-gray-100 dark:border-gray-700">
+                                   <td className="px-3 py-2">{u.name}</td>
+                                   <td className="px-3 py-2">{u.role === UserRole.ADMIN ? t('admin') : t('employee')}</td>
+                                   <td className="px-3 py-2">{u.department || '—'}</td>
+                                   <td className="px-3 py-2">{u.phone || '—'}</td>
+                                   <td className="px-3 py-2">{u.email || '—'}</td>
+                                    <td className="px-3 py-2">{u.createdAt ? new Date(u.createdAt).toLocaleString(locale) : '—'}</td>
+                                    <td className="px-3 py-2 flex gap-2">
+                                      <button onClick={async()=>{ try { await api.delete(`/users/${u.id}`); setUsers(prev => prev.filter(x => x.id !== u.id)); showToast(t('userDeletedToast'), 'success'); } catch { showToast(t('userDeleteFailedToast'), 'error'); } }} className="px-3 py-1 rounded-md bg-gradient-to-r from-rose-600 to-pink-500 text-white hover:from-rose-700 hover:to-pink-600">{t('delete')}</button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                          </>
                        )}
                      </div>

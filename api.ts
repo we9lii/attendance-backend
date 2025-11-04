@@ -7,7 +7,13 @@ function getToken() {
 }
 
 function withAuth(headers: Record<string, string> = {}) {
-  // Remove Authorization header entirely per requirement to drop JWT usage
+  // Attach Authorization header if token exists
+  try {
+    const token = getToken();
+    if (token) {
+      return { ...headers, Authorization: `Bearer ${token}` };
+    }
+  } catch {}
   return headers;
 }
 
