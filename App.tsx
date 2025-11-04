@@ -2549,16 +2549,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
     
     const handleRequestStatus = async (id: number, status: RequestStatus) => {
         // تحديث الحالة على الخادم لضمان المشاركة عبر الجلسات
+        const req = requests.find(r => r.id === id);
+        if (!req) {
+          showToast('لم يتم العثور على الطلب المحدد.', 'error');
+          return;
+        }
         try {
-          const updated = await api.put(`/requests/${id}`, { status });
-          setRequests(prev => prev.map(req => req.id === id ? { ...req, status: String(updated.status || status) as any } : req));
+          const updated = await api.put(`/requests/${id}`, { status, type: req.type });
+          setRequests(prev => prev.map(r => r.id === id ? { ...r, status: String(updated.status || status) as any } : r));
           showToast(status === RequestStatus.APPROVED ? 'تم قبول الطلب' : 'تم رفض الطلب', 'success');
         } catch {
           showToast('تعذّر تحديث حالة الطلب على الخادم.', 'error');
           return;
         }
         // إنشاء تنبيه للمستخدم صاحب الطلب
-        const req = requests.find(r => r.id === id);
         if (req) {
           const employeeId = req.userId;
           const employeeName = users.find(u => u.id === employeeId)?.name || 'الموظف';
