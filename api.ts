@@ -62,18 +62,41 @@ async function resolveApiBase(): Promise<string> {
   return apiBaseCache;
 }
 
+// Helper: perform fetch and, if local proxy fails (e.g., ERR_ABORTED), retry directly against the remote backend once.
+async function fetchWithProxyFallback(path: string, init?: RequestInit) {
+  const base = await resolveApiBase();
+  const url = `${base}/api${path}`;
+  try {
+    const res = await fetch(url, init);
+    return res;
+  } catch (e: any) {
+    // In some dev environments the proxy can intermittently abort requests.
+    // If we're in local dev (base === ''), retry against the known remote backend once.
+    const isLocalBase = base === '';
+    const looksAborted = typeof e?.message === 'string' && e.message.toLowerCase().includes('abort');
+    if (isLocalBase && looksAborted) {
+      const remote = 'https://attendance-backend-u99p.onrender.com';
+      const remoteUrl = `${remote}/api${path}`;
+      try {
+        return await fetch(remoteUrl, init);
+      } catch (e2) {
+        throw e; // keep original error context
+      }
+    }
+    throw e;
+  }
+}
+
 export const api = {
   async get(path: string) {
-    const base = await resolveApiBase();
-    const res = await fetch(`${base}/api${path}`, {
+    const res = await fetchWithProxyFallback(path, {
       headers: withAuth({ 'Accept': 'application/json' }),
     });
     if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
     return res.json();
   },
   async post(path: string, body: any) {
-    const base = await resolveApiBase();
-    const res = await fetch(`${base}/api${path}`, {
+    const res = await fetchWithProxyFallback(path, {
       method: 'POST',
       headers: withAuth({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
       body: JSON.stringify(body),
@@ -82,8 +105,7 @@ export const api = {
     return res.json();
   },
   async put(path: string, body: any) {
-    const base = await resolveApiBase();
-    const res = await fetch(`${base}/api${path}`, {
+    const res = await fetchWithProxyFallback(path, {
       method: 'PUT',
       headers: withAuth({ 'Content-Type': 'application/json', 'Accept': 'application/json' }),
       body: JSON.stringify(body),
@@ -92,8 +114,7 @@ export const api = {
     return res.json();
   },
   async delete(path: string) {
-    const base = await resolveApiBase();
-    const res = await fetch(`${base}/api${path}`, {
+    const res = await fetchWithProxyFallback(path, {
       method: 'DELETE',
       headers: withAuth({ 'Accept': 'application/json' }),
     });
@@ -101,8 +122,7 @@ export const api = {
     return res.json();
   },
   async login(username: string, password: string) {
-    const base = await resolveApiBase();
-    const res = await fetch(`${base}/api/login`, {
+    const res = await fetchWithProxyFallback('/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -111,8 +131,7 @@ export const api = {
     return res.json();
   },
   async logout() {
-    const base = await resolveApiBase();
-    const res = await fetch(`${base}/api/logout`, { method: 'POST' });
+    const res = await fetchWithProxyFallback('/logout', { method: 'POST' });
     if (!res.ok) throw new Error(`POST /logout failed: ${res.status}`);
     return res.json();
   }

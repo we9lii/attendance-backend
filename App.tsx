@@ -727,7 +727,7 @@ const Header: React.FC<{ user: User | null; toggleRole: () => void; theme: 'ligh
                         <li className="px-3 py-4 text-sm text-gray-500 dark:text-gray-400">{t('noNotifications')}</li>
                       )}
                       {latest10.map(n => (
-                        <li key={n.id} className={`px-3 py-2 text-sm border-b dark:border-gray-700 ${itemClasses(n)}`}>
+                        <li key={`notif-${n.id}-${n.timestamp}`} className={`px-3 py-2 text-sm border-b dark:border-gray-700 ${itemClasses(n)}`}>
                           <div className="flex items-start justify-between gap-2">
                             <div>
                               <div className="font-medium truncate">{n.title}</div>
@@ -850,7 +850,7 @@ const EmployeeNotificationForm: React.FC<{ users: User[]; onSent: (n: Notificati
       <label className="block text-sm">{t('selectEmployee')}</label>
       <select value={targetId ?? ''} onChange={e=>setTargetId(Number(e.target.value))} className="w-full px-3 py-2 rounded-md bg-white dark:bg-gray-700">
         {users.filter(u=>u.role===UserRole.EMPLOYEE).map(u=> (
-          <option key={u.id} value={u.id}>{u.name}</option>
+          <option key={`emp-opt-${u.id}`} value={u.id}>{u.name}</option>
         ))}
       </select>
       <label className="block text-sm">{t('titleLabel')}</label>
@@ -1161,7 +1161,15 @@ export default function App() {
             reason: String(r.reason || ''),
             status: String(r.status) as any,
           }));
-          setRequests(normalized);
+          // إزالة التكرارات المحتملة حسب (id + userId + type + date)
+          const seenReq = new Set<string>();
+          const uniqueRequests = normalized.filter(r => {
+            const key = `${r.id}-${r.userId}-${r.type}-${r.date}`;
+            if (seenReq.has(key)) return false;
+            seenReq.add(key);
+            return true;
+          });
+          setRequests(uniqueRequests);
         } catch (e) {
           // إبقاء الحالة فارغة عند الفشل
         }
@@ -1207,7 +1215,8 @@ export default function App() {
     const nextUser = (desiredRole ? users.find(u => u.role === desiredRole) : users.find(u => u.role === UserRole.EMPLOYEE))
       || users.find(u => u.role === UserRole.ADMIN)
       || null;
-    setCurrentUser(nextUser);
+    // تجنّب تعيين نفس المستخدم مراراً لتفادي تحديثات غير ضرورية
+    setCurrentUser(prev => (prev?.id === nextUser?.id ? prev : nextUser));
   }, [authPresent, users]);
 
   const toggleTheme = () => {
@@ -1330,12 +1339,12 @@ export default function App() {
                 <div className="text-base md:text-lg text-gray-600 dark:text-gray-300">نظام الحضور والإنصراف</div>
               </div>
               {loginError && <div className="text-sm text-red-600 mb-3">{loginError}</div>}
-              <div className="space-y-3">
+              <form className="space-y-3" onSubmit={(e)=>{ e.preventDefault(); handleAppLogin(); }}>
                 <input value={loginForm.username} onChange={e=>setLoginForm(f=>({ ...f, username: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-md border dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" placeholder={t('usernamePlaceholder')} />
                 <input type="password" value={loginForm.password} onChange={e=>setLoginForm(f=>({ ...f, password: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-md border dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" placeholder={t('passwordPlaceholder')} />
                 {/* زر الدخول بتدرّج لوني */}
-                <button onClick={handleAppLogin} disabled={loginLoading} className="w-full px-3 md:px-4 py-3 text-lg rounded-lg font-semibold bg-gradient-to-r from-indigo-600 to-blue-500 text-white shadow-sm hover:shadow-md hover:from-indigo-700 hover:to-blue-600 disabled:opacity-50">{loginLoading ? '...' : t('loginButton')}</button>
-              </div>
+                <button type="submit" onClick={handleAppLogin} disabled={loginLoading} className="w-full px-3 md:px-4 py-3 text-lg rounded-lg font-semibold bg-gradient-to-r from-indigo-600 to-blue-500 text-white shadow-sm hover:shadow-md hover:from-indigo-700 hover:to-blue-600 disabled:opacity-50">{loginLoading ? '...' : t('loginButton')}</button>
+              </form>
             </div>
           </div>
         </main>
@@ -1500,7 +1509,12 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
                         locationId: newRecord.locationId,
                         source: newRecord.source,
                       });
-                      setAttendance(prev => [...prev, { ...newRecord, id: Number(saved?.id || newRecord.id) }]);
+                      setAttendance(prev => {
+                        const newId = Number(saved?.id || newRecord.id);
+                        // منع التكرار إن كان نفس المعرف موجودًا مسبقًا
+                        if (prev.some(r => r.id === newId)) return prev;
+                        return [...prev, { ...newRecord, id: newId }];
+                      });
                       showToast(t('checkInSuccessFrom').replace('{name}', validLocation.name), 'success');
                       // تنبيه تأخير أو حضور
                       if (isLate && settings.instantLateNotificationEnabled) {
@@ -1605,7 +1619,9 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
                 setActiveAdminId(latestIncoming.fromUserId);
                 setShowChat(true);
             }
-            setChatMessages(prev => prev.map(m => (m.fromUserId === latestIncoming.fromUserId && m.toUserId === user.id) ? { ...m, read: true } : m));
+            if (chatMessages.some(m => m.fromUserId === latestIncoming.fromUserId && m.toUserId === user.id && !m.read)) {
+              setChatMessages(prev => prev.map(m => (m.fromUserId === latestIncoming.fromUserId && m.toUserId === user.id) ? { ...m, read: true } : m));
+            }
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [chatMessages, user.id, allUsers]);
@@ -1705,7 +1721,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
                             {msgsCurrent.map(m => {
                               const isAdmin = adminIds.includes(m.fromUserId);
                               return (
-                                <div key={m.id} className={`flex ${isAdmin ? 'justify-start' : 'justify-end'}`}>
+                                <div key={`msg-${m.id}-${m.timestamp}`} className={`flex ${isAdmin ? 'justify-start' : 'justify-end'}`}>
                                   <div className={`max-w-[75%] px-3 py-2 rounded-lg text-sm ${isAdmin ? 'bg-gray-900 text-white dark:bg-gray-900' : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100'}`}>
                                     <div className="text-xs opacity-70 mb-1">{isAdmin ? t('admin') : t('me')}</div>
                                     <div>{m.message}</div>
@@ -1858,7 +1874,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
                         <div className="h-1 w-20 mb-6 rounded-full bg-gradient-to-r from-indigo-500 via-blue-500 to-cyan-500"></div>
                         <ul className="space-y-3 max-h-60 overflow-y-auto">
                             {attendance.filter(a => a.userId === user.id).slice().reverse().map(rec => (
-                                <li key={rec.id} className="text-sm p-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60 transition-colors hover:bg-gradient-to-r hover:from-indigo-50 hover:via-blue-50 hover:to-cyan-50 dark:hover:from-indigo-900/30 dark:hover:via-blue-900/30 dark:hover:to-cyan-900/30">
+                                <li key={`att-${rec.id}-${rec.checkIn}`} className="text-sm p-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60 transition-colors hover:bg-gradient-to-r hover:from-indigo-50 hover:via-blue-50 hover:to-cyan-50 dark:hover:from-indigo-900/30 dark:hover:via-blue-900/30 dark:hover:to-cyan-900/30">
                                     <p><strong>{t('date')}:</strong> {new Date(rec.checkIn).toLocaleDateString(locale)}</p>
                                     <p><strong>{t('checkInLabel')}:</strong> {new Date(rec.checkIn).toLocaleTimeString(locale)} <span className="text-xs text-gray-500">({rec.source})</span></p>
                                     {rec.checkOut && <p><strong>{t('checkOutLabel')}:</strong> {new Date(rec.checkOut).toLocaleTimeString(locale)}</p>}
@@ -1871,8 +1887,13 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({ user, showToast, 
                         <h3 className="text-xl font-bold mb-4">{t('myRequests')}</h3>
                         <div className="h-1 w-20 mb-6 rounded-full bg-gradient-to-r from-indigo-500 via-blue-500 to-cyan-500"></div>
                         <ul className="space-y-3 max-h-60 overflow-y-auto">
-                            {requests.filter(r => r.userId === user.id).slice().reverse().map(req => (
-                                 <li key={req.id} className="text-sm p-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60 transition-colors hover:bg-gradient-to-r hover:from-indigo-50 hover:via-blue-50 hover:to-cyan-50 dark:hover:from-indigo-900/30 dark:hover:via-blue-900/30 dark:hover:to-cyan-900/30">
+                            {requests.filter(r => r.userId === user.id)
+                              .filter((r, idx, arr) => {
+                                const key = `${r.id}-${r.date}-${r.type}`;
+                                return arr.findIndex(rr => `${rr.id}-${rr.date}-${rr.type}` === key) === idx;
+                              })
+                              .slice().reverse().map(req => (
+                                 <li key={`req-${req.id}-${req.date}-${req.type}`} className="text-sm p-2 rounded-md bg-white/60 dark:bg-gray-800/60 ring-1 ring-gray-200/60 dark:ring-gray-700/60 transition-colors hover:bg-gradient-to-r hover:from-indigo-50 hover:via-blue-50 hover:to-cyan-50 dark:hover:from-indigo-900/30 dark:hover:via-blue-900/30 dark:hover:to-cyan-900/30">
                                      <p><strong>{t('type')}:</strong> {(req.type === RequestType.LEAVE ? t('leave') : t('excuse'))} - {new Date(req.date).toLocaleDateString(locale)}</p>
                                      <p className="flex items-center gap-2">
                                        <strong>{t('status')}:</strong>
@@ -1955,14 +1976,14 @@ const HeatmapCalendar: React.FC<{ absenceData: Map<string, number>; lang: Lang }
             <h3 className="text-xl font-bold mb-4">{t('absenceHeatmapTitle').replace('{month}', monthName).replace('{year}', String(year))}</h3>
             <div className="grid grid-cols-7 gap-1 text-center text-sm">
                 {weekdayNames.map(day => (
-                    <div key={day} className="font-semibold p-2 text-gray-600 dark:text-gray-300">{day}</div>
+                    <div key={`weekday-${day}`} className="font-semibold p-2 text-gray-600 dark:text-gray-300">{day}</div>
                 ))}
                 {Array.from({ length: firstDayOfMonth }).map((_, i) => <div key={`empty-${i}`}></div>)}
                 {Array.from({ length: daysInMonth }).map((_, i) => {
                     const day = i + 1;
                     const count = absenceData.get(new Date(year, month, day).toDateString()) || 0;
                     return (
-                        <div key={day} className={`relative p-2 rounded-md ${getDayColor(day)} h-16 flex items-center justify-center transition-all duration-300`}>
+                        <div key={`day-${day}`} className={`relative p-2 rounded-md ${getDayColor(day)} h-16 flex items-center justify-center transition-all duration-300`}>
                             <span className="font-bold">{day}</span>
                             {count > 0 && <div className="absolute bottom-1 right-1 text-xs px-1.5 py-0.5 bg-black bg-opacity-20 rounded-full">{count}</div>}
                         </div>
@@ -2043,7 +2064,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
       try {
         const res = await api.post('/users', { ...payload, role });
         const mapped = {
-          id: res.id,
+          // Ensure we always have a unique numeric id even if backend returns null/undefined
+          id: Number(res.id ?? Date.now()),
           name: res.name,
           role: (res.role === 'admin' ? UserRole.ADMIN : UserRole.EMPLOYEE),
           department: res.department || '',
@@ -2111,10 +2133,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
         // أرسل رسالة بدء للمحادثة وإشعار للموظف لفتح الصندوق عنده (محفوظة على الخادم)
         try {
           const startMsg = await api.post('/chat/messages', { fromUserId: currentUser.id, toUserId: employeeId, message: t('adminChatStarted') });
-          setChatMessages(prev => [...prev, {
-            id: Number(startMsg.id), fromUserId: Number(startMsg.fromUserId), toUserId: Number(startMsg.toUserId),
-            message: String(startMsg.message), timestamp: new Date(startMsg.timestamp).toISOString(), read: !!startMsg.read
-          }]);
+          setChatMessages(prev => {
+            const newItem = {
+              id: Number(startMsg.id), fromUserId: Number(startMsg.fromUserId), toUserId: Number(startMsg.toUserId),
+              message: String(startMsg.message), timestamp: new Date(startMsg.timestamp).toISOString(), read: !!startMsg.read
+            };
+            if (prev.some(m => m.id === newItem.id)) return prev;
+            return [...prev, newItem];
+          });
         } catch {}
         try { await api.post('/notifications', { title: t('newChat'), message: t('adminStartedChatTapToOpen'), targetUserIds: [employeeId] }); } catch {}
       }
@@ -2128,17 +2154,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
       // Send closure message by admin and persist to server
       try {
         const sent = await api.post('/chat/messages', { fromUserId: currentUser.id, toUserId: activeChatEmployeeId!, message: t('adminChatClosed') });
-        setChatMessages(prev => ([
-          ...prev,
-          {
+        setChatMessages(prev => {
+          const newItem = {
             id: Number(sent.id),
             fromUserId: Number(sent.fromUserId),
             toUserId: Number(sent.toUserId),
             message: String(sent.message),
             timestamp: new Date(sent.timestamp).toISOString(),
             read: !!sent.read,
-          }
-        ]));
+          };
+          if (prev.some(m => m.id === newItem.id)) return prev;
+          return [...prev, newItem];
+        });
       } catch {}
     };
     const sendChatMessage = async () => {
@@ -2152,9 +2179,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
       }
       try {
         const sent = await api.post('/chat/messages', { fromUserId: currentUser.id, toUserId: activeChatEmployeeId, message: text });
-        setChatMessages(prev => ([...prev, {
-          id: Number(sent.id), fromUserId: Number(sent.fromUserId), toUserId: Number(sent.toUserId), message: String(sent.message), timestamp: new Date(sent.timestamp).toISOString(), read: !!sent.read
-        }]));
+        setChatMessages(prev => {
+          const newItem = { id: Number(sent.id), fromUserId: Number(sent.fromUserId), toUserId: Number(sent.toUserId), message: String(sent.message), timestamp: new Date(sent.timestamp).toISOString(), read: !!sent.read };
+          if (prev.some(m => m.id === newItem.id)) return prev;
+          return [...prev, newItem];
+        });
       } catch {
         // فشل الإرسال لا يمنع واجهة المستخدم من العمل لكن لا تخزّن محلياً كنجاح
         showToast('تعذّر إرسال رسالة الدردشة.', 'error');
@@ -3229,10 +3258,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {detailRecords.map(r => {
+                                        {detailRecords.map(r => {
                                       const u = users.find(u=>u.id===r.userId);
-                                      return (
-                                        <tr key={r.id} className="border-b dark:border-gray-700 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/20 transition-colors">
+                                          return (
+                                            <tr key={`det-${r.id}-${r.checkIn}`} className="border-b dark:border-gray-700 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/20 transition-colors">
                                           <td className="px-3 py-2">{u?.name || `#${r.userId}`}</td>
                                           <td className="px-3 py-2">{formatTime(r.checkIn)}</td>
                                           <td className="px-3 py-2">{r.isLate ? 'نعم' : 'لا'}</td>
@@ -3251,7 +3280,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                             {detailType === 'ABSENT' && (
                               <div className="flex flex-wrap gap-2">
                                 {absentList.map(u => (
-                                  <span key={u.id} className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-xs bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-200 dark:ring-rose-800">
+                                  <span key={`absent-${u.id}`} className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-xs bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-200 dark:ring-rose-800">
                                     {u.name}
                                   </span>
                                 ))}
@@ -3339,7 +3368,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                 const statusClass = req.status === RequestStatus.PENDING ? 'bg-amber-100 text-amber-700 ring-amber-200' : req.status === RequestStatus.APPROVED ? 'bg-green-100 text-green-700 ring-green-200' : 'bg-rose-100 text-rose-700 ring-rose-200';
                                 const isChecked = selectedRequestIds.includes(req.id);
                                 return (
-                                  <tr key={req.id} className="bg-white/70 dark:bg-gray-800/60 border-b border-gray-100 dark:border-gray-700 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/20 transition-colors">
+                                  <tr key={`req-${req.id}-${req.userId}-${req.date}-${req.type}`} className="bg-white/70 dark:bg-gray-800/60 border-b border-gray-100 dark:border-gray-700 hover:bg-indigo-50/60 dark:hover:bg-indigo-900/20 transition-colors">
                                     <td className="px-4 py-3"><input type="checkbox" className="rounded" checked={isChecked} onChange={e => toggleSelectOne(req.id, e.target.checked)} /></td>
                                     <td className="px-4 py-3">{userName}</td>
                                     <td className="px-4 py-3">{req.type}</td>
@@ -3433,7 +3462,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                             </div>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                               {generatedReport.data.lateEmployeesData.map((d:any) => (
-                                <div key={d.name} className="p-3 bg-white/80 dark:bg-gray-800/70 rounded-lg ring-1 ring-gray-200/60 dark:ring-gray-700/60">
+                                <div key={`late-${d.name}-${d.lateDays}`} className="p-3 bg-white/80 dark:bg-gray-800/70 rounded-lg ring-1 ring-gray-200/60 dark:ring-gray-700/60">
                                   <div className="flex items-center justify-between">
                                     <div className="font-semibold">{d.name}</div>
                                     <div className="text-xs text-gray-500">{d.lateDays} أيام</div>
@@ -3480,7 +3509,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                 const u = employeeUsers.find(e=>e.id===id);
                                 if (!u) return null;
                                 return (
-                                  <span key={id} className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-xs bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:ring-emerald-800">
+                                  <span key={`sel-${id}`} className="inline-flex items-center gap-2 px-2 py-1 rounded-full text-xs bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:ring-emerald-800">
                                     {u.name}
                                     <button className="text-emerald-700 dark:text-emerald-200" onClick={() => setReportEmployeeIds(prev => prev.filter(x=>x!==id))}>×</button>
                                   </span>
@@ -3492,7 +3521,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                 {employeeUsers.filter(u => u.name.toLowerCase().includes(reportEmployeeQuery.toLowerCase())).map(u => {
                                   const checked = reportEmployeeIds.includes(u.id);
                                   return (
-                                    <label key={u.id} className="flex items-center gap-2 text-sm">
+                                    <label key={`emp-${u.id}`} className="flex items-center gap-2 text-sm">
                                       <input
                                         type="checkbox"
                                         checked={checked}
@@ -3755,7 +3784,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                           const openSession = chatSessions.find(s => s.employeeId === u.id && s.isOpen);
                                           return (
                                             <button
-                                              key={u.id}
+                                              key={`emp-${u.id}`}
                                               onClick={() => { openChatWith(u.id); setIsEmployeePickerOpen(false); setEmployeePickerQuery(''); }}
                                               className="w-full text-right px-2 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center justify-between"
                                             >
@@ -3848,7 +3877,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                       const isActive = activeChatEmployeeId === s.employeeId;
                                       return (
                                         <button
-                                          key={s.id}
+                                          key={`sess-${s.id}-${s.employeeId}`}
                                           type="button"
                                           onClick={() => { setActiveChatEmployeeId(s.employeeId); markSessionMessagesRead(s.employeeId); }}
                                           className={`w-full text-right p-2 rounded-md ring-1 ring-gray-200/60 dark:ring-gray-700/60 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer ${isActive ? 'bg-indigo-50 dark:bg-indigo-900/40' : 'bg-white/60 dark:bg-gray-800/60'}`}
@@ -3927,7 +3956,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                         {msgs.map(m => {
                                           const isAdmin = m.fromUserId === currentUser.id;
                                           return (
-                                            <div key={m.id} className={`flex ${isAdmin ? 'justify-end' : 'justify-start'}`}>
+                                            <div key={`msg-${m.id}-${m.timestamp}`} className={`flex ${isAdmin ? 'justify-end' : 'justify-start'}`}>
                                               <div className={`max-w-[70%] px-3 py-2 rounded-lg text-sm ${isAdmin ? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100' : 'bg-gray-900 text-white dark:bg-gray-900'}`}>
                                                 <div className="text-xs opacity-70 mb-1">{isAdmin ? t('adminLabel2') : emp?.name || t('employeeLabelGeneric')}</div>
                                                 <div>{m.message}</div>
@@ -4076,7 +4105,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                              </thead>
                              <tbody>
                                {users.map(u => (
-                                 <tr key={u.id} className="border-b border-gray-100 dark:border-gray-700">
+                                 <tr key={`user-${u.id}`} className="border-b border-gray-100 dark:border-gray-700">
                                    <td className="px-3 py-2">{u.name}</td>
                                    <td className="px-3 py-2">{u.role === UserRole.ADMIN ? t('admin') : t('employee')}</td>
                                    <td className="px-3 py-2">{u.department || '—'}</td>
@@ -4190,9 +4219,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                 </div>
                               </div>
                             </div>
-                            {/*
                             <div className="mt-4 flex justify-end">
                               <button
+                                type="button"
                                 onClick={() => {
                                   if (!newLoc.name.trim()) { showToast(t('enterLocationNameToast'), 'warning'); return; }
                                   api.post('/approved-locations', { name: newLoc.name, latitude: newLoc.latitude, longitude: newLoc.longitude, radius: newLoc.radius })
@@ -4209,7 +4238,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                                 {t('saveLocation')}
                               </button>
                             </div>
-                            */}
                           </div>
                         )}
                         {!collapseLocations && (
@@ -4226,7 +4254,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                             </thead>
                             <tbody>
                               {locations.map(loc => (
-                                <tr key={loc.id} className="border-b border-gray-100 dark:border-gray-700">
+                                <tr key={`loc-${loc.id}`} className="border-b border-gray-100 dark:border-gray-700">
                                   {editingLocId === loc.id ? (
                                     <>
                                       <td className="px-3 py-2"><input defaultValue={loc.name} onChange={e=>loc.name = e.target.value} className="px-2 py-1 rounded-md bg-white/60 dark:bg-gray-800/60" /></td>

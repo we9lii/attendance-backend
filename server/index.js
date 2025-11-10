@@ -59,7 +59,10 @@ const pool = mysql.createPool({
 let DB_AVAILABLE = true;
 // Fallback local users store when DB is unavailable (degraded mode)
 const localUsers = [];
-let localUserId = 1;
+// Use high-entropy numeric IDs in local (DB-offline) mode to avoid collisions
+// with seeded sample users (ids 1 and 2) and ensure uniqueness across quick creations.
+// We use Date.now() for simplicity; for extreme concurrency, combine with a random suffix.
+let localUserId = 1; // kept for potential future use, but not used for ID assignment anymore
 
 async function initTables() {
   const conn = await pool.getConnection();
@@ -378,8 +381,9 @@ function requireAdmin(req, res, next) {
 }
 // Optional auth guard for users list when DB is offline and anonymous mode enabled
 function optionalAuthForUsers(req, res, next) {
-  if (!DB_AVAILABLE && ALLOW_ANON_USERS && req.method === 'GET') {
-    // Skip auth for read-only users list in degraded mode
+  if (!DB_AVAILABLE && req.method === 'GET') {
+    // Skip auth for read-only users list in degraded mode to allow the UI to fetch
+    // the local in-memory users list without falling back to sample users.
     return next();
   }
   return requireAuth(req, res, next);
@@ -454,8 +458,9 @@ app.post('/api/users', requireAdmin, async (req, res) => {
     if (!['admin','employee'].includes(r)) return res.status(400).json({ error: 'Invalid role' });
     // Fallback: when DB is unavailable, simulate user creation in-memory
     if (!DB_AVAILABLE) {
+      const uniqueNumericId = Number(`${Date.now()}${Math.floor(Math.random()*1000).toString().padStart(3,'0')}`);
       const user = {
-        id: localUserId++,
+        id: uniqueNumericId,
         name,
         username,
         role: r,
