@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="180" viewBox="0 0 640 180">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="640" height="180" fill="white"/>
+  <g transform="translate(24,24)">
+    <circle cx="60" cy="66" r="48" fill="url(#g)" opacity="0.15"/>
+    <path d="M20 102 L60 20 L100 102 Z" fill="url(#g)"/>
+    <circle cx="60" cy="66" r="22" fill="#22D3EE" opacity="0.6"/>
+  </g>
+  <text x="150" y="70" font-family="Segoe UI, Arial" font-size="26" font-weight="700" fill="#0F172A">نظام إدارة الحضور والانصراف</text>
+  <text x="150" y="110" font-family="Segoe UI, Arial" font-size="18" fill="#334155">شركة مدائن المستقبل للطاقة</text>
+</svg>
