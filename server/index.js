@@ -186,6 +186,8 @@ const allowedOrigins = rawCorsOrigin
   .map(o => o.trim())
   .map(o => o.replace(/\/+$/, ''))
   .filter(o => o.length > 0);
+// Optionally allow local/LAN dev origins without explicitly listing them
+const ALLOW_LAN = ['1','true','yes','on'].includes(String(process.env.CORS_ALLOW_LAN || '').toLowerCase());
 
 if (allowedOrigins.length === 0) {
   // Open CORS (for development or unrestricted mode)
@@ -200,8 +202,23 @@ if (allowedOrigins.length === 0) {
       if (!origin) return callback(null, true);
       // Normalize origin by removing trailing slashes before checking
       const normalized = origin.replace(/\/+$/, '');
+      // Special case: wildcard '*' allows any origin
+      if (allowedSet.has('*')) {
+        return callback(null, true);
+      }
       if (allowedSet.has(normalized)) {
         return callback(null, true);
+      }
+      // If ALLOW_LAN=true, allow typical local dev origins (localhost and private LAN ranges)
+      if (ALLOW_LAN) {
+        try {
+          const host = new URL(origin).hostname || '';
+          const isLocal = host === 'localhost' || host === '127.0.0.1';
+          const isLan = /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
+          if (isLocal || isLan) {
+            return callback(null, true);
+          }
+        } catch {}
       }
       console.warn('CORS blocked origin:', origin);
       return callback(new Error('Not allowed by CORS'));
@@ -262,8 +279,40 @@ if (allowedOrigins.length === 0) {
     next();
   });
 
-// Health
-app.get('/api/health', (req, res) => res.json({ ok: true }));
+// Health: supports JSON (default) and optional text format for uptime bots
+app.get('/api/health', (req, res) => {
+  if ((req.query?.format || '').toString().toLowerCase() === 'text') {
+    return res.type('text/plain').send('Api run');
+  }
+  return res.json({ ok: true });
+});
+// Simple ping endpoint for cron/uptime checks: returns plain text
+app.get('/api/ping', (req, res) => {
+  res.type('text/plain').send('Api run');
+});
+// Root API endpoint also returns plain text for convenience
+app.get('/api', (req, res) => {
+  res.type('text/plain').send('Api run');
+});
+// Root fallback for plain text uptime checks
+app.get('/', (req, res) => {
+  res
+    .type('text/html; charset=utf-8')
+    .send(
+      `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Api run</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Tahoma, Arial, sans-serif; margin: 0; padding: 24px; color: #111; }
+    </style>
+  </head>
+  <body>Api run</body>
+</html>`
+    );
+});
 // DB health: tries to get a connection and run SELECT 1
 app.get('/api/health/db', async (req, res) => {
   try {

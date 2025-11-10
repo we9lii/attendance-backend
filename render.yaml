@@ -9,7 +9,9 @@ services:
     # Environment variables (safe defaults only; set secrets in Render dashboard)
     envVars:
       - key: CORS_ORIGIN
-        value: "http://qcheck.qssun.solar,https://qcheck.qssun.solar"
+        value: "http://qcheck.qssun.solar,https://qcheck.qssun.solar,http://localhost:3000"
+      - key: CORS_ALLOW_LAN
+        value: "true"
       - key: DISABLE_AUTH
         value: "true"
       - key: DB_SSL

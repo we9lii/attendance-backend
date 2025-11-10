@@ -8,6 +8,15 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        // Proxy API calls during development to the remote backend to avoid CORS
+        proxy: {
+          // Only proxy real API calls (paths starting with "/api/") and avoid intercepting module files like "/api.ts"
+          '/api/': {
+            target: 'https://attendance-backend-u99p.onrender.com',
+            changeOrigin: true,
+            secure: false,
+          }
+        }
       },
       build: {
         sourcemap: true,
