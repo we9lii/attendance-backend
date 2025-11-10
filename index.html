@@ -27,6 +27,161 @@
   </head>
   <body class="font-sans bg-gray-900 text-gray-100">
     <div id="root"></div>
+    <!-- Temporary overlay: تسجيل الدخول أولًا ثم الجلب التلقائي لسجلات البصمة -->
+    <div id="zk-overlay" class="fixed top-4 left-4 z-50 space-y-3 w-[360px]">
+      <!-- Login Card -->
+      <div id="login-card" class="rounded-lg bg-gray-800/80 backdrop-blur border border-gray-700 p-3 space-y-2 shadow">
+        <div class="font-semibold text-gray-100">تسجيل الدخول</div>
+        <label class="block text-sm text-gray-300">اسم المستخدم</label>
+        <input id="login-username" class="w-full px-3 py-2 rounded bg-gray-900 border border-gray-700 text-gray-100" placeholder="مثال: 1" />
+        <label class="block text-sm text-gray-300">كلمة المرور</label>
+        <input id="login-password" type="password" class="w-full px-3 py-2 rounded bg-gray-900 border border-gray-700 text-gray-100" placeholder="مثال: 1" />
+        <button id="login-btn" class="w-full px-3 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white shadow">دخول</button>
+        <div id="login-status" class="text-xs text-gray-300"></div>
+        <div class="text-[11px] text-gray-400 pt-1">الافتراضي: اسم المستخدم 1 وكلمة المرور 1 (يمكن تعديلهما من ملف .env)</div>
+      </div>
+
+      <!-- Fetch controls (hidden حتى تسجيل الدخول) -->
+      <div id="fetch-card" class="rounded-lg bg-gray-800/80 backdrop-blur border border-gray-700 p-3 space-y-2 shadow hidden">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold text-gray-100">جلب سجلات البصمة</div>
+          <button id="logout-btn" class="px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600 text-gray-200">خروج</button>
+        </div>
+        <button id="zk-fetch-btn" class="w-full px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-500 text-white shadow">جلب الآن</button>
+        <div id="zk-status" class="text-sm text-gray-200"></div>
+        <div id="zk-results" class="max-h-64 overflow-auto bg-gray-900 rounded p-2 text-xs hidden"></div>
+        <div class="text-[11px] text-gray-400">يتم الجلب تلقائيًا كل 60 ثانية بعد تسجيل الدخول.</div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        const btn = document.getElementById('zk-fetch-btn');
+        const statusEl = document.getElementById('zk-status');
+        const resultsEl = document.getElementById('zk-results');
+        const loginBtn = document.getElementById('login-btn');
+        const logoutBtn = document.getElementById('logout-btn');
+        const loginStatus = document.getElementById('login-status');
+        const loginCard = document.getElementById('login-card');
+        const fetchCard = document.getElementById('fetch-card');
+        const loginUsername = document.getElementById('login-username');
+        const loginPassword = document.getElementById('login-password');
+        // Use relative API path so Vite dev proxy forwards to backend (avoids CORS issues)
+        const endpoint = '/api/zklib-attendances';
+        const loginEndpoint = '/api/login';
+        let polling = null;
+        let token = localStorage.getItem('authToken') || '';
+
+        function setLoggedIn(loggedIn) {
+          if (loggedIn) {
+            loginCard.classList.add('hidden');
+            fetchCard.classList.remove('hidden');
+          } else {
+            fetchCard.classList.add('hidden');
+            loginCard.classList.remove('hidden');
+          }
+        }
+
+        // Reflect existing token state on load
+        setLoggedIn(!!token);
+
+        function renderLogs(logs) {
+          resultsEl.innerHTML = '';
+          const toShow = Array.isArray(logs) ? logs.slice(0, 20) : [];
+          if (toShow.length === 0) {
+            resultsEl.classList.add('hidden');
+            return;
+          }
+          resultsEl.classList.remove('hidden');
+          for (const l of toShow) {
+            const div = document.createElement('div');
+            div.className = 'py-1 border-b border-gray-700';
+            const uid = l.uid ?? l.user_id ?? '';
+            const date = l.timestamp ?? l.date ?? l.time ?? '';
+            const type = l.type ?? l.state ?? '';
+            div.textContent = `UID: ${uid} | ${date} | ${type}`;
+            resultsEl.appendChild(div);
+          }
+        }
+
+        async function doFetch() {
+          if (!token) {
+            statusEl.textContent = 'الرجاء تسجيل الدخول أولًا.';
+            resultsEl.classList.add('hidden');
+            return;
+          }
+          statusEl.textContent = 'جارِ الاتصال بجهاز البصمة...';
+          btn.disabled = true;
+          try {
+            const res = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': 'Bearer ' + token } : {}) },
+              body: JSON.stringify({ host: '192.168.100.23', port: 4370, inport: 5200, timeout: 10000 })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error((data && data.error) || res.statusText || 'خطأ غير معروف');
+            const logs = data.value || data.attendances || data.logs || data;
+            const count = Array.isArray(logs) ? logs.length : 0;
+            statusEl.textContent = `تم جلب ${count} سجل حضور من الجهاز.`;
+            renderLogs(logs);
+          } catch (err) {
+            statusEl.textContent = 'حدث خطأ: ' + (err && err.message ? err.message : String(err));
+            resultsEl.classList.add('hidden');
+          } finally {
+            btn.disabled = false;
+          }
+        }
+
+        // زر الجلب اليدوي
+        btn.addEventListener('click', doFetch);
+
+        // تسجيل الدخول
+        async function doLogin() {
+          loginStatus.textContent = '';
+          const username = String(loginUsername.value || '').trim();
+          const password = String(loginPassword.value || '');
+          if (!username || !password) {
+            loginStatus.textContent = 'أدخل اسم المستخدم وكلمة المرور.';
+            return;
+          }
+          loginBtn.disabled = true;
+          try {
+            const res = await fetch(loginEndpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username, password })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error((data && data.error) || res.statusText || 'فشل تسجيل الدخول');
+            token = String(data.token || '');
+            if (!token) throw new Error('لم يتم استلام رمز الدخول');
+            localStorage.setItem('authToken', token);
+            loginStatus.textContent = 'تم تسجيل الدخول بنجاح.';
+            setLoggedIn(true);
+            // بدء الجلب التلقائي بعد تسجيل الدخول مباشرةً
+            await doFetch();
+            if (polling) clearInterval(polling);
+            polling = setInterval(doFetch, 60000);
+          } catch (e) {
+            loginStatus.textContent = 'خطأ: ' + (e && e.message ? e.message : String(e));
+          } finally {
+            loginBtn.disabled = false;
+          }
+        }
+        loginBtn.addEventListener('click', doLogin);
+
+        // خروج
+        logoutBtn.addEventListener('click', () => {
+          token = '';
+          localStorage.removeItem('authToken');
+          if (polling) { clearInterval(polling); polling = null; }
+          statusEl.textContent = '';
+          resultsEl.classList.add('hidden');
+          setLoggedIn(false);
+        });
+
+        // لا يتم الجلب تلقائيًا إلا بعد تسجيل الدخول
+      })();
+    </script>
   <script type="module" src="/index.tsx"></script>
 </body>
 </html>

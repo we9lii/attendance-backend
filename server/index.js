@@ -10,6 +10,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import jwt from 'jsonwebtoken';
 import ZKLib from 'node-zklib';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+// Optional alternative library (callback-based)
+let ZKLibCallback;
+try {
+  ZKLibCallback = require('zklib');
+} catch (e) {
+  console.warn('zklib (callback-based) not installed or failed to load. Install with `npm install zklib` if needed.');
+}
 let bcrypt;
 try {
   const mod = await import('bcryptjs');
@@ -243,6 +252,11 @@ if (allowedOrigins.length === 0) {
 } else {
   // Use dynamic origin function to handle multiple origins safely
   const allowedSet = new Set(allowedOrigins);
+  // Ensure common local dev origins are always permitted to avoid CORS issues during development
+  allowedSet.add('http://localhost:3000');
+  allowedSet.add('http://localhost:3001');
+  allowedSet.add('http://localhost:5173');
+  allowedSet.add('http://localhost:4173');
   app.use(cors({
     origin: (origin, callback) => {
       // Allow requests with no origin (like mobile apps, curl, Postman)
@@ -298,6 +312,7 @@ if (allowedOrigins.length === 0) {
           req.originalUrl.startsWith('/api/external-config') ||
           req.originalUrl.startsWith('/api/device-users') ||
           req.originalUrl.startsWith('/api/device-test') ||
+          req.originalUrl.startsWith('/api/zklib-attendances') ||
           req.originalUrl.startsWith('/api/employees') ||
           req.originalUrl.startsWith('/api/departments') ||
           req.originalUrl.startsWith('/api/areas') ||
@@ -631,7 +646,11 @@ app.post('/api/test-fingerprint', async (req, res) => {
     const text = await resp.text();
     res.json({ ok, status, preview: text.slice(0, 200) });
   } catch (e) {
-    res.status(502).json({ ok: false, error: String(e.message || e) });
+    try {
+      console.error('Error in /api/device-test:', e?.message || e);
+      if (e?.stack) console.error(e.stack);
+    } catch {}
+    res.status(502).json({ ok: false, error: String(e.message || e), code: e?.code, details: e?.stack });
   }
 });
 
@@ -725,7 +744,7 @@ app.post('/api/device-test', async (req, res) => {
 
 // Fetch attendance logs directly from ZKTeco device (optional DB save in future)
 // This endpoint connects to device and returns simplified logs without requiring DB
-app.post('/api/device-attendances', async (req, res) => {
+  app.post('/api/device-attendances', async (req, res) => {
   try {
     const { host, port, inport, timeout, password } = req.body || {};
     const h = String(host || process.env.ZK_HOST || '');
@@ -752,7 +771,11 @@ app.post('/api/device-attendances', async (req, res) => {
     }).filter(x => x.userId) : [];
     res.json({ count: mapped.length, logs: mapped });
   } catch (e) {
-    res.status(502).json({ error: String(e.message || e) });
+    try {
+      console.error('Error in /api/device-attendances:', e?.message || e);
+      if (e?.stack) console.error(e.stack);
+    } catch {}
+    res.status(502).json({ error: String(e.message || e), code: e?.code, details: e?.stack });
   }
 });
 
@@ -948,7 +971,8 @@ app.post('/api/notifications/read', requireAuth, async (req, res) => {
 // Requests API (leave/excuse)
 // Unified list
 app.get('/api/requests', requireAuth, async (req, res) => {
-  if (!DB_AVAILABLE) return res.status(503).json({ error: 'Database unavailable' });
+  // في وضع التدهور (قاعدة البيانات غير متاحة)، أعد قائمة فارغة بدل 503 لتجنب أخطاء الواجهة
+  if (!DB_AVAILABLE) return res.json([]);
   const { userId, status, type, limit } = req.query;
   const lim = Math.max(1, Math.min(1000, Number(limit) || 500));
   const paramsLeave = [];
@@ -1239,8 +1263,62 @@ initTables()
   .catch(err => {
     DB_AVAILABLE = false;
     console.warn('DB unavailable, starting server in degraded mode:', err);
+    // Seed local in-memory users so أن صفحة "المستخدمين" لا تكون فارغة تمامًا في وضع التدهور
+    try {
+      if (localUsers.length === 0) {
+        localUsers.push({ id: 1, name: 'Administrator', username: ADMIN_USERNAME, role: 'admin', department: null, phone: null, email: null, active: 1 });
+        localUsers.push({ id: 2, name: 'Employee', username: EMPLOYEE_USERNAME, role: 'employee', department: null, phone: null, email: null, active: 1 });
+        console.log('Degraded mode: seeded localUsers with default admin and employee');
+      }
+    } catch (se) {
+      console.warn('Failed to seed local users in degraded mode:', se);
+    }
     app.listen(PORT, () => {
       console.log(`Server listening on port ${PORT} (DB offline)`);
     });
     // Do not start device connector or reminder scheduler when DB is offline
+  });
+
+  // Alternative endpoint using `zklib` (callback-based) library
+  app.post('/api/zklib-attendances', async (req, res) => {
+    const { host, port, inport, timeout } = req.body || {};
+    const h = String(host || process.env.ZK_HOST || '');
+    const p = Number(port || process.env.ZK_PORT || 4370);
+    const ip = Number(inport || process.env.ZK_INPORT || 5200);
+    const to = Number(timeout || process.env.ZK_TIMEOUT_MS || 10000);
+
+    if (!ZKLibCallback) {
+      return res.status(500).json({ ok: false, error: 'zklib library not available on server' });
+    }
+    if (!h) {
+      return res.status(400).json({ ok: false, error: 'host is required' });
+    }
+
+    console.log(`[zklib] Connecting to ${h}:${p} (inport=${ip}, timeout=${to})`);
+    try {
+      const logs = await new Promise((resolve, reject) => {
+        try {
+          const zk = new ZKLibCallback({ ip: h, port: p, inport: ip, timeout: to });
+          zk.connect(function (err) {
+            if (err) {
+              try { zk.disconnect(); } catch {}
+              return reject(err);
+            }
+            zk.getAttendance(function (err, records) {
+              try { zk.disconnect(); } catch {}
+              if (err) return reject(err);
+              resolve(records || []);
+            });
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+      const count = Array.isArray(logs) ? logs.length : 0;
+      console.log(`[zklib] fetched ${count} logs`);
+      return res.json({ ok: true, value: Array.isArray(logs) ? logs : [], count });
+    } catch (e) {
+      console.error('[zklib] fetch error:', e?.message || e, e?.stack || '');
+      return res.status(500).json({ ok: false, error: String(e?.message || e) });
+    }
   });
