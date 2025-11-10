@@ -186,6 +186,8 @@ const allowedOrigins = rawCorsOrigin
   .map(o => o.trim())
   .map(o => o.replace(/\/+$/, ''))
   .filter(o => o.length > 0);
+// Optionally allow local/LAN dev origins without explicitly listing them
+const ALLOW_LAN = ['1','true','yes','on'].includes(String(process.env.CORS_ALLOW_LAN || '').toLowerCase());
 
 if (allowedOrigins.length === 0) {
   // Open CORS (for development or unrestricted mode)
@@ -200,8 +202,23 @@ if (allowedOrigins.length === 0) {
       if (!origin) return callback(null, true);
       // Normalize origin by removing trailing slashes before checking
       const normalized = origin.replace(/\/+$/, '');
+      // Special case: wildcard '*' allows any origin
+      if (allowedSet.has('*')) {
+        return callback(null, true);
+      }
       if (allowedSet.has(normalized)) {
         return callback(null, true);
+      }
+      // If ALLOW_LAN=true, allow typical local dev origins (localhost and private LAN ranges)
+      if (ALLOW_LAN) {
+        try {
+          const host = new URL(origin).hostname || '';
+          const isLocal = host === 'localhost' || host === '127.0.0.1';
+          const isLan = /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
+          if (isLocal || isLan) {
+            return callback(null, true);
+          }
+        } catch {}
       }
       console.warn('CORS blocked origin:', origin);
       return callback(new Error('Not allowed by CORS'));
