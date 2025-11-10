@@ -1307,10 +1307,10 @@ export default function App() {
   if (!authPresent) {
     const t = useI18n(lang);
     return (
-      <div className="font-sans bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen flex flex-col">
+      <div className="font-sans bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen flex flex-col" dir={lang==='ar'?'rtl':'ltr'}>
         {/* شريط علوي يضم تبديل اللغة والوضع العام */}
         <header className="sticky top-0 z-30 bg-transparent">
-          <div className="container mx-auto px-4 py-3 flex justify-end items-center gap-3">
+          <div dir="ltr" className="container mx-auto px-4 py-3 flex items-center justify-between gap-3">
             <div className="inline-flex items-center rounded-full bg-white/60 dark:bg-gray-700/60 backdrop-blur ring-1 ring-gray-200/60 dark:ring-gray-600/50 p-1">
               <button onClick={() => setLang('ar')} className={`px-2.5 py-1 text-xs md:text-sm rounded-full transition ${lang==='ar' ? 'bg-gradient-to-r from-indigo-600 to-blue-500 text-white shadow-sm' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600'}`}>{t('langAR')}</button>
               <button onClick={() => setLang('en')} className={`px-2.5 py-1 text-xs md:text-sm rounded-full transition ${lang==='en' ? 'bg-gradient-to-r from-indigo-600 to-blue-500 text-white shadow-sm' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600'}`}>{t('langEN')}</button>
@@ -1318,21 +1318,23 @@ export default function App() {
             <ThemeToggle theme={theme} toggleTheme={toggleTheme} />
           </div>
         </header>
-        <main className="flex-grow container mx-auto px-4 py-12 flex items-center justify-center">
-          <div className="w-full max-w-lg bg-white dark:bg-gray-800 rounded-xl overflow-hidden shadow-xl ring-1 ring-gray-200/60 dark:ring-gray-700/60">
+        <main className="flex-grow container mx-auto px-4 py-12 flex flex-col items-center justify-center">
+          <div className="w-full max-w-md bg-white dark:bg-gray-800 rounded-xl overflow-hidden shadow-xl ring-1 ring-gray-200/60 dark:ring-gray-700/60 min-h-[420px]">
             {/* شريط متدرّج أعلى البطاقة */}
             <div className="h-2 bg-gradient-to-r from-indigo-600 via-blue-500 to-purple-600"></div>
-            <div className="p-7">
-              <div className="text-center mb-4">
-                <div className="text-lg font-semibold mb-1">{t('loginTitle')}</div>
-                <div className="text-xs text-gray-500">{t('loginSubtitle')}</div>
+            <div className="px-7 pt-9 pb-6">
+              <div className="text-center mb-5">
+                {/* رسالة ترحيبية مخصصة */}
+                <div className="text-3xl md:text-4xl font-bold mb-1">مرحبا بك في</div>
+                <div className="text-3xl md:text-4xl font-bold mb-1">Time & Attendance System</div>
+                <div className="text-base md:text-lg text-gray-600 dark:text-gray-300">نظام الحضور والإنصراف</div>
               </div>
               {loginError && <div className="text-sm text-red-600 mb-3">{loginError}</div>}
               <div className="space-y-3">
-                <input value={loginForm.username} onChange={e=>setLoginForm(f=>({ ...f, username: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-md border dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200" placeholder={t('usernamePlaceholder')} />
-                <input type="password" value={loginForm.password} onChange={e=>setLoginForm(f=>({ ...f, password: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-md border dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200" placeholder={t('passwordPlaceholder')} />
+                <input value={loginForm.username} onChange={e=>setLoginForm(f=>({ ...f, username: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-md border dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" placeholder={t('usernamePlaceholder')} />
+                <input type="password" value={loginForm.password} onChange={e=>setLoginForm(f=>({ ...f, password: e.target.value }))} className="w-full text-sm px-3 py-2 rounded-md border dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/60" placeholder={t('passwordPlaceholder')} />
                 {/* زر الدخول بتدرّج لوني */}
-                <button onClick={handleAppLogin} disabled={loginLoading} className="w-full px-4 py-2 text-sm rounded-md bg-gradient-to-r from-indigo-600 to-blue-500 text-white hover:from-indigo-700 hover:to-blue-600 disabled:opacity-50">{loginLoading ? '...' : t('loginButton')}</button>
+                <button onClick={handleAppLogin} disabled={loginLoading} className="w-full px-3 md:px-4 py-3 text-lg rounded-lg font-semibold bg-gradient-to-r from-indigo-600 to-blue-500 text-white shadow-sm hover:shadow-md hover:from-indigo-700 hover:to-blue-600 disabled:opacity-50">{loginLoading ? '...' : t('loginButton')}</button>
               </div>
             </div>
           </div>
@@ -2411,6 +2413,261 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
       a.click();
       URL.revokeObjectURL(url);
     };
+    // أداة مساعدة: تسجيل خط Cairo داخل jsPDF (محلي ثم سحابي كاحتياطي)
+    const registerCairoFont = async (doc: any) => {
+      const toBase64 = (buffer: ArrayBuffer) => {
+        let binary = '';
+        const bytes = new Uint8Array(buffer);
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          const sub = bytes.subarray(i, i + chunk);
+          binary += String.fromCharCode.apply(null, Array.from(sub) as any);
+        }
+        return btoa(binary);
+      };
+      const fetchFont = async (urls: string[]) => {
+        for (const url of urls) {
+          try {
+            const res = await fetch(url);
+            if (res.ok) return await res.arrayBuffer();
+          } catch {}
+        }
+        return null;
+      };
+
+      const regularBuf = await fetchFont([
+        '/fonts/Cairo-Regular.ttf',
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo-Regular.ttf',
+      ]);
+      const boldBuf = await fetchFont([
+        '/fonts/Cairo-Bold.ttf',
+        'https://raw.githubusercontent.com/google/fonts/main/ofl/cairo/Cairo-Bold.ttf',
+      ]);
+
+      if (regularBuf) {
+        doc.addFileToVFS('Cairo-Regular.ttf', toBase64(regularBuf));
+        doc.addFont('Cairo-Regular.ttf', 'Cairo', 'normal');
+      }
+      if (boldBuf) {
+        doc.addFileToVFS('Cairo-Bold.ttf', toBase64(boldBuf));
+        doc.addFont('Cairo-Bold.ttf', 'Cairo', 'bold');
+      }
+    };
+
+    // تصدير Excel (XLSX) منسّق مع شعار الشركة
+    const exportReportXlsxStyled = async () => {
+      if (!reportType) return;
+      const collect = () => {
+        const headers: string[] = [];
+        const rows: string[][] = [];
+        if (reportType === 'LATE_HOURS') {
+          headers.push(t('date'), t('employeeLabel2'), t('lateHours'));
+          employeeUsers.filter(u=>selectedIds.includes(u.id)).forEach(u => {
+            dayList.forEach(d => {
+              const key = `${u.id}-${d.toDateString()}`;
+              const recs = byUserDay.get(key) || [];
+              const mins = recs.reduce((sum,r)=>sum+(r.isLate?r.lateMinutes:0),0);
+              rows.push([d.toLocaleDateString(locale), u.name, formatHm(mins)]);
+            });
+          });
+        } else if (reportType === 'LATE_MINUTES') {
+          headers.push(t('date'), t('employeeLabel2'), t('lateMinutes'));
+          employeeUsers.filter(u=>selectedIds.includes(u.id)).forEach(u => {
+            dayList.forEach(d => {
+              const key = `${u.id}-${d.toDateString()}`;
+              const recs = byUserDay.get(key) || [];
+              const mins = recs.reduce((sum,r)=>sum+(r.isLate?r.lateMinutes:0),0);
+              rows.push([d.toLocaleDateString(locale), u.name, `${mins} ${t('minutesLabel')}`]);
+            });
+          });
+        } else if (reportType === 'ATTENDANCE_TIMES') {
+          headers.push(t('date'), t('employeeLabel2'), t('checkInTime'), t('checkOutTime'), t('totalHours'), t('dayStatus'));
+          employeeUsers.filter(u=>selectedIds.includes(u.id)).forEach(u => {
+            dayList.forEach(d => {
+              const key = `${u.id}-${d.toDateString()}`;
+              const recs = byUserDay.get(key) || [];
+              const first = recs.slice().sort((a,b)=>new Date(a.checkIn).getTime()-new Date(b.checkIn).getTime())[0];
+              const last = recs.slice().sort((a,b)=>new Date(a.checkOut||a.checkIn).getTime()-new Date(b.checkOut||b.checkIn).getTime()).slice(-1)[0];
+              const ci = first?.checkIn ? new Date(first.checkIn).toLocaleTimeString(locale) : '-';
+              const co = last?.checkOut ? new Date(last.checkOut).toLocaleTimeString(locale) : '-';
+              const tot = totalHours(first?.checkIn, last?.checkOut);
+              const st = statusForDay(u.id, d);
+              rows.push([d.toLocaleDateString(locale), u.name, ci, co, tot, st]);
+            });
+          });
+        } else if (reportType === 'ABSENCES') {
+          headers.push(t('date'), t('employeeLabel2'), t('absenceType'));
+          employeeUsers.filter(u=>selectedIds.includes(u.id)).forEach(u => {
+            dayList.forEach(d => {
+              const code = dayStatusCode(u.id, d);
+              if (code === 'PRESENT' || code === 'LATE') return;
+              rows.push([d.toLocaleDateString(locale), u.name, statusForDay(u.id, d)]);
+            });
+          });
+        } else if (reportType === 'EXCUSES') {
+          headers.push(t('date'), t('employeeLabel2'), t('reasonCol'), t('status'), t('adminNote'));
+          requests.filter(r => r.type === RequestType.EXCUSE && selectedIds.includes(r.userId) && inDateRange(r.date)).forEach(r => {
+            const u = users.find(u => u.id === r.userId);
+            const note = (r as any).adminNote || '-';
+            rows.push([new Date(r.date).toLocaleDateString(locale), u?.name || '—', r.reason, r.status, note]);
+          });
+        }
+        return { headers, rows };
+      };
+
+      const { headers, rows } = collect();
+      const ExcelJSMod = await import('exceljs');
+      const ExcelJS = (ExcelJSMod as any).default || ExcelJSMod as any;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('Report');
+
+      ws.mergeCells(1,1,1,Math.max(headers.length,4));
+      const titleCell = ws.getCell(1,1);
+      titleCell.value = 'شركة مدائن المستقبل للطاقة — نظام التقارير';
+      titleCell.font = { name: 'Cairo', bold: true, size: 16, color: { argb: 'FF0F172A' } } as any;
+      titleCell.alignment = { horizontal: 'center' };
+      titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF6FF' } };
+
+      // شعار الشركة
+      try {
+        const svgText = await (await fetch('/logo.svg')).text();
+        const svgBlob = new Blob([svgText], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(svgBlob);
+        const img = new Image();
+        await new Promise<void>((resolve,reject)=>{ img.onload=()=>resolve(); img.onerror=()=>reject(); img.src=url; });
+        const canvas = document.createElement('canvas');
+        canvas.width = 640; canvas.height = 180;
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        const png = canvas.toDataURL('image/png');
+        URL.revokeObjectURL(url);
+        const imageId = wb.addImage({ base64: png, extension: 'png' });
+        ws.addImage(imageId, { tl: { col: 0, row: 0 }, ext: { width: 480, height: 100 } });
+      } catch {}
+
+      const headerRow = ws.addRow(headers);
+      headerRow.font = { name: 'Cairo', bold: true, color: { argb: 'FFFFFFFF' } } as any;
+      headerRow.alignment = { horizontal: 'center' } as any;
+      headerRow.fill = { type: 'gradient', gradient: 'angle', degree: 0, stops: [
+        { position: 0, color: { argb: 'FF10B981' } },
+        { position: 1, color: { argb: 'FF06B6D4' } }
+      ] } as any;
+
+      rows.forEach(r => {
+        const row = ws.addRow(r);
+        row.eachCell((cell: any) => { cell.font = { name: 'Cairo', size: 12 } as any; });
+      });
+      ws.columns = headers.map(h => ({ header: h, width: Math.max(12, h.length + 6) }));
+      ws.views = [{ state: 'frozen', ySplit: 2 }];
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `report-${reportType}-${new Date().toISOString().slice(0,10)}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    // تصدير PDF منسّق مع شعار الشركة
+    const exportReportPdfStyled = async () => {
+      if (!reportType) return;
+      const collect = () => {
+        const headers: string[] = [];
+        const rows: string[][] = [];
+        if (reportType === 'LATE_HOURS') {
+          headers.push(t('date'), t('employeeLabel2'), t('lateHours'));
+          employeeUsers.filter(u=>selectedIds.includes(u.id)).forEach(u => {
+            dayList.forEach(d => {
+              const key = `${u.id}-${d.toDateString()}`;
+              const recs = byUserDay.get(key) || [];
+              const mins = recs.reduce((sum,r)=>sum+(r.isLate?r.lateMinutes:0),0);
+              rows.push([d.toLocaleDateString(locale), u.name, formatHm(mins)]);
+            });
+          });
+        } else if (reportType === 'LATE_MINUTES') {
+          headers.push(t('date'), t('employeeLabel2'), t('lateMinutes'));
+          employeeUsers.filter(u=>selectedIds.includes(u.id)).forEach(u => {
+            dayList.forEach(d => {
+              const key = `${u.id}-${d.toDateString()}`;
+              const recs = byUserDay.get(key) || [];
+              const mins = recs.reduce((sum,r)=>sum+(r.isLate?r.lateMinutes:0),0);
+              rows.push([d.toLocaleDateString(locale), u.name, `${mins} ${t('minutesLabel')}`]);
+            });
+          });
+        } else if (reportType === 'ATTENDANCE_TIMES') {
+          headers.push(t('date'), t('employeeLabel2'), t('checkInTime'), t('checkOutTime'), t('totalHours'), t('dayStatus'));
+          employeeUsers.filter(u=>selectedIds.includes(u.id)).forEach(u => {
+            dayList.forEach(d => {
+              const key = `${u.id}-${d.toDateString()}`;
+              const recs = byUserDay.get(key) || [];
+              const first = recs.slice().sort((a,b)=>new Date(a.checkIn).getTime()-new Date(b.checkIn).getTime())[0];
+              const last = recs.slice().sort((a,b)=>new Date(a.checkOut||a.checkIn).getTime()-new Date(b.checkOut||b.checkIn).getTime()).slice(-1)[0];
+              const ci = first?.checkIn ? new Date(first.checkIn).toLocaleTimeString(locale) : '-';
+              const co = last?.checkOut ? new Date(last.checkOut).toLocaleTimeString(locale) : '-';
+              const tot = totalHours(first?.checkIn, last?.checkOut);
+              const st = statusForDay(u.id, d);
+              rows.push([d.toLocaleDateString(locale), u.name, ci, co, tot, st]);
+            });
+          });
+        } else if (reportType === 'ABSENCES') {
+          headers.push(t('date'), t('employeeLabel2'), t('absenceType'));
+          employeeUsers.filter(u=>selectedIds.includes(u.id)).forEach(u => {
+            dayList.forEach(d => {
+              const code = dayStatusCode(u.id, d);
+              if (code === 'PRESENT' || code === 'LATE') return;
+              rows.push([d.toLocaleDateString(locale), u.name, statusForDay(u.id, d)]);
+            });
+          });
+        } else if (reportType === 'EXCUSES') {
+          headers.push(t('date'), t('employeeLabel2'), t('reasonCol'), t('status'), t('adminNote'));
+          requests.filter(r => r.type === RequestType.EXCUSE && selectedIds.includes(r.userId) && inDateRange(r.date)).forEach(r => {
+            const u = users.find(u => u.id === r.userId);
+            const note = (r as any).adminNote || '-';
+            rows.push([new Date(r.date).toLocaleDateString(locale), u?.name || '—', r.reason, r.status, note]);
+          });
+        }
+        return { headers, rows };
+      };
+
+      const { headers, rows } = collect();
+      const jsPDFMod = await import('jspdf');
+      const autoTableMod = await import('jspdf-autotable');
+      const jsPDF = (jsPDFMod as any).default || jsPDFMod;
+      const autoTable = (autoTableMod as any).default || (autoTableMod as any);
+
+      const doc = new jsPDF({ orientation: 'landscape' });
+      await registerCairoFont(doc);
+      try { doc.setFont('Cairo', 'normal'); } catch {}
+      doc.setFontSize(16);
+      doc.text('شركة مدائن المستقبل للطاقة — تقرير', 10, 14);
+      // إضافة الشعار
+      try {
+        const svgText = await (await fetch('/logo.svg')).text();
+        const svgBlob = new Blob([svgText], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(svgBlob);
+        const img = new Image();
+        await new Promise<void>((resolve,reject)=>{ img.onload=()=>resolve(); img.onerror=()=>reject(); img.src=url; });
+        const canvas = document.createElement('canvas');
+        canvas.width = 640; canvas.height = 180;
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        const png = canvas.toDataURL('image/png');
+        URL.revokeObjectURL(url);
+        doc.addImage(png, 'PNG', 250, 5, 60, 17);
+      } catch {}
+
+      autoTable(doc, {
+        head: [headers],
+        body: rows,
+        styles: { font: 'Cairo', fontSize: 9 },
+        headStyles: { fillColor: [16,185,129], textColor: 255 },
+        theme: 'striped',
+        startY: 22,
+      });
+      doc.save(`report-${reportType}-${new Date().toISOString().slice(0,10)}.pdf`);
+    };
     const exportMonthlyReportExcel = () => {
       if (!generatedReport) return;
       const { data, title } = generatedReport;
@@ -2466,6 +2723,162 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
       a.download = `monthly_report_${new Date().toISOString().slice(0,7)}.xls`;
       a.click();
       URL.revokeObjectURL(url);
+    };
+    // تصدير التقرير الشهري XLSX منسّق مع شعار الشركة
+    const exportMonthlyReportXlsxStyled = async () => {
+      if (!generatedReport) return;
+      const ExcelJSMod = await import('exceljs');
+      const ExcelJS = (ExcelJSMod as any).default || ExcelJSMod as any;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('Monthly');
+
+      ws.mergeCells(1,1,1,8);
+      const titleCell = ws.getCell(1,1);
+      titleCell.value = `شركة مدائن المستقبل للطاقة — ${generatedReport.title || 'التقرير الشهري'}`;
+      titleCell.font = { name: 'Cairo', bold: true, size: 16, color: { argb: 'FF0F172A' } } as any;
+      titleCell.alignment = { horizontal: 'center' };
+      titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF6FF' } };
+
+      try {
+        const svgText = await (await fetch('/logo.svg')).text();
+        const svgBlob = new Blob([svgText], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(svgBlob);
+        const img = new Image();
+        await new Promise<void>((resolve,reject)=>{ img.onload=()=>resolve(); img.onerror=()=>reject(); img.src=url; });
+        const canvas = document.createElement('canvas');
+        canvas.width = 640; canvas.height = 180;
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        const png = canvas.toDataURL('image/png');
+        URL.revokeObjectURL(url);
+        const imageId = wb.addImage({ base64: png, extension: 'png' });
+        ws.addImage(imageId, { tl: { col: 0, row: 0 }, ext: { width: 480, height: 100 } });
+      } catch {}
+
+      const { data } = generatedReport;
+      // Summary
+      ws.addRow([]);
+      const sh = ws.addRow(['العنصر','القيمة']);
+      sh.font = { name: 'Cairo', bold: true, color: { argb: 'FFFFFFFF' } } as any;
+      sh.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2563EB' } } as any;
+      [
+        ['إجمالي أيام التأخير', String(data.summary.totalLateness ?? '-')],
+        ['نسبة الحضور', String(data.summary.attendanceRate ?? '-')],
+        ['الغياب غير المبرر', String(data.summary.unjustifiedAbsences ?? '-')],
+        ['أعلى قسم تأخيراً', String(data.summary.highestDept ?? '-')],
+      ].forEach(r => {
+        const row = ws.addRow(r);
+        row.eachCell((cell: any) => { cell.font = { name: 'Cairo', size: 12 } as any; });
+      });
+
+      // Employees
+      ws.addRow([]);
+      const eh = ws.addRow(['الموظف','أيام التأخير','إجمالي ساعات التأخير','متوسط دقائق التأخير']);
+      eh.font = { name: 'Cairo', bold: true, color: { argb: 'FFFFFFFF' } } as any;
+      eh.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10B981' } } as any;
+      (data.lateEmployeesData || []).forEach((d:any)=>{
+        const row = ws.addRow([d.name, String(d.lateDays ?? 0), String(d.totalLateHours ?? '-'), String(d.avgLateMinutes ?? '-')]);
+        row.eachCell((cell: any) => { cell.font = { name: 'Cairo', size: 12 } as any; });
+      });
+
+      // Daily details
+      ws.addRow([]);
+      const dh = ws.addRow(['الموظف','التاريخ','دقائق التأخير']);
+      dh.font = { name: 'Cairo', bold: true, color: { argb: 'FFFFFFFF' } } as any;
+      dh.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF06B6D4' } } as any;
+      (data.lateEmployeesData || []).forEach((d:any)=>{
+        (d.details || []).forEach((item:any)=>{
+          const row = ws.addRow([d.name, String(item.date), String(item.minutes)]);
+          row.eachCell((cell: any) => { cell.font = { name: 'Cairo', size: 12 } as any; });
+        });
+      });
+
+      ws.columns = [
+        { width: 28 }, { width: 22 }, { width: 24 }, { width: 24 }, { width: 24 }, { width: 24 }, { width: 24 }, { width: 24 }
+      ];
+      ws.views = [{ state: 'frozen', ySplit: 2 }];
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `monthly-report-${new Date().toISOString().slice(0,10)}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    // تصدير التقرير الشهري PDF منسّق مع الشعار
+    const exportMonthlyReportPdfStyled = async () => {
+      if (!generatedReport) return;
+      const jsPDFMod = await import('jspdf');
+      const autoTableMod = await import('jspdf-autotable');
+      const jsPDF = (jsPDFMod as any).default || jsPDFMod;
+      const autoTable = (autoTableMod as any).default || (autoTableMod as any);
+
+      const doc = new jsPDF({ orientation: 'landscape' });
+      await registerCairoFont(doc);
+      try { doc.setFont('Cairo', 'normal'); } catch {}
+      doc.setFontSize(16);
+      doc.text(`شركة مدائن المستقبل للطاقة — ${generatedReport.title || 'التقرير الشهري'}`, 10, 14);
+      try {
+        const svgText = await (await fetch('/logo.svg')).text();
+        const svgBlob = new Blob([svgText], { type: 'image/svg+xml' });
+        const url = URL.createObjectURL(svgBlob);
+        const img = new Image();
+        await new Promise<void>((resolve,reject)=>{ img.onload=()=>resolve(); img.onerror=()=>reject(); img.src=url; });
+        const canvas = document.createElement('canvas');
+        canvas.width = 640; canvas.height = 180;
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        const png = canvas.toDataURL('image/png');
+        URL.revokeObjectURL(url);
+        doc.addImage(png, 'PNG', 250, 5, 60, 17);
+      } catch {}
+
+      const { data } = generatedReport;
+      // Summary table
+      autoTable(doc, {
+        head: [['العنصر','القيمة']],
+        body: [
+          ['إجمالي أيام التأخير', String(data.summary.totalLateness ?? '-')],
+          ['نسبة الحضور', String(data.summary.attendanceRate ?? '-')],
+          ['الغياب غير المبرر', String(data.summary.unjustifiedAbsences ?? '-')],
+          ['أعلى قسم تأخيراً', String(data.summary.highestDept ?? '-')],
+        ],
+        styles: { font: 'Cairo', fontSize: 9 },
+        headStyles: { fillColor: [37,99,235], textColor: 255 },
+        theme: 'striped',
+        startY: 22,
+      });
+
+      // Employees monthly summary
+      autoTable(doc, {
+        head: [['الموظف','أيام التأخير','إجمالي ساعات التأخير','متوسط دقائق التأخير']],
+        body: (data.lateEmployeesData || []).map((d:any)=>[d.name, String(d.lateDays ?? 0), String(d.totalLateHours ?? '-'), String(d.avgLateMinutes ?? '-')]),
+        styles: { font: 'Cairo', fontSize: 9 },
+        headStyles: { fillColor: [16,185,129], textColor: 255 },
+        theme: 'striped',
+        startY: (doc as any).lastAutoTable.finalY + 8,
+      });
+
+      // Daily details
+      const detailsBody: any[] = [];
+      (data.lateEmployeesData || []).forEach((d:any)=>{
+        (d.details || []).forEach((item:any)=>{
+          detailsBody.push([d.name, String(item.date), String(item.minutes)]);
+        });
+      });
+      autoTable(doc, {
+        head: [['الموظف','التاريخ','دقائق التأخير']],
+        body: detailsBody,
+        styles: { font: 'Cairo', fontSize: 9 },
+        headStyles: { fillColor: [6,182,212], textColor: 255 },
+        theme: 'striped',
+        startY: (doc as any).lastAutoTable.finalY + 8,
+      });
+
+      doc.save(`monthly-report-${new Date().toISOString().slice(0,10)}.pdf`);
     };
     const inDateRange = (isoDate: string) => {
       const d = new Date(isoDate);
@@ -2966,10 +3379,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                     <div className="bg-white/70 dark:bg-gray-800/70 backdrop-blur p-6 rounded-xl shadow-md ring-1 ring-gray-200/60 dark:ring-gray-700/60 animate-fade-in">
                         <div className="flex items-center justify-between mb-4">
                           <h2 className="text-2xl font-bold">نظام التقارير المتقدم</h2>
-                          <div className="flex gap-2">
+                          <div className="flex flex-wrap gap-2">
                             <button onClick={handleGenerateMonthlyReport} className="px-4 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700">توليد التقرير الشهري</button>
                             {generatedReport && <button onClick={() => setGeneratedReport(null)} className="px-4 py-2 rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300">إخفاء الملخص</button>}
-                            <button onClick={exportMonthlyReportExcel} disabled={!generatedReport} className={`px-4 py-2 rounded-md text-white ${generatedReport ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-gray-400 cursor-not-allowed'}`}>تصدير التقرير الشهري Excel</button>
+                            <button onClick={exportMonthlyReportExcel} disabled={!generatedReport} className={`px-4 py-2 rounded-md text-white ${generatedReport ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-gray-400 cursor-not-allowed'}`}>تصدير التقرير الشهري Excel (قديمة)</button>
+                            <button onClick={exportMonthlyReportXlsxStyled} disabled={!generatedReport} className={`px-4 py-2 rounded-md text-white ${generatedReport ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-gray-400 cursor-not-allowed'}`}>تصدير التقرير الشهري Excel (منسّق)</button>
+                            <button onClick={exportMonthlyReportPdfStyled} disabled={!generatedReport} className={`px-4 py-2 rounded-md text-white ${generatedReport ? 'bg-rose-600 hover:bg-rose-700' : 'bg-gray-400 cursor-not-allowed'}`}>تصدير التقرير الشهري PDF (منسّق)</button>
                           </div>
                         </div>
 
@@ -2984,7 +3399,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
                             <option value="ABSENCES">الغيابات المصنفة</option>
                             <option value="EXCUSES">الاعتذارات الرسمية</option>
                           </select>
-                          <button onClick={exportReportExcel} disabled={!reportType} className={`w-full px-3 py-2 rounded-md text-white ${reportType ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-gray-400 cursor-not-allowed'}`}>تصدير Excel</button>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                            <button onClick={exportReportExcel} disabled={!reportType} className={`w-full px-3 py-2 rounded-md text-white ${reportType ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-gray-400 cursor-not-allowed'}`}>تصدير Excel (قديمة)</button>
+                            <button onClick={exportReportXlsxStyled} disabled={!reportType} className={`w-full px-3 py-2 rounded-md text-white ${reportType ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-gray-400 cursor-not-allowed'}`}>تصدير Excel (منسّق)</button>
+                            <button onClick={exportReportPdfStyled} disabled={!reportType} className={`w-full px-3 py-2 rounded-md text-white ${reportType ? 'bg-rose-600 hover:bg-rose-700' : 'bg-gray-400 cursor-not-allowed'}`}>تصدير PDF (منسّق)</button>
+                          </div>
                           {!reportType && (
                             <div className="mt-2 text-xs text-gray-700 dark:text-gray-300">من فضلك اختر نوع التقرير لعرض البيانات.</div>
                           )}

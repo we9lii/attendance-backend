@@ -279,8 +279,40 @@ if (allowedOrigins.length === 0) {
     next();
   });
 
-// Health
-app.get('/api/health', (req, res) => res.json({ ok: true }));
+// Health: supports JSON (default) and optional text format for uptime bots
+app.get('/api/health', (req, res) => {
+  if ((req.query?.format || '').toString().toLowerCase() === 'text') {
+    return res.type('text/plain').send('Api run');
+  }
+  return res.json({ ok: true });
+});
+// Simple ping endpoint for cron/uptime checks: returns plain text
+app.get('/api/ping', (req, res) => {
+  res.type('text/plain').send('Api run');
+});
+// Root API endpoint also returns plain text for convenience
+app.get('/api', (req, res) => {
+  res.type('text/plain').send('Api run');
+});
+// Root fallback for plain text uptime checks
+app.get('/', (req, res) => {
+  res
+    .type('text/html; charset=utf-8')
+    .send(
+      `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Api run</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Tahoma, Arial, sans-serif; margin: 0; padding: 24px; color: #111; }
+    </style>
+  </head>
+  <body>Api run</body>
+</html>`
+    );
+});
 // DB health: tries to get a connection and run SELECT 1
 app.get('/api/health/db', async (req, res) => {
   try {

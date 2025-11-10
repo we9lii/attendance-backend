@@ -21,18 +21,21 @@ let apiBaseCache: string | null = null;
 
 async function resolveApiBase(): Promise<string> {
   if (apiBaseCache) return apiBaseCache;
-  // استخدم الخادم المحلي تلقائيًا عند التشغيل من localhost أو شبكة LAN
+  // 1) In local dev (localhost/LAN) and not Capacitor, use Vite proxy via same-origin '/api' (return empty base)
   try {
     const w = (typeof window !== 'undefined') ? (window as any) : {};
     const host = w?.location?.hostname || '';
     const isLocal = host === 'localhost' || host === '127.0.0.1';
     const isLan = /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
-    if (isLocal || isLan) {
-      apiBaseCache = 'http://localhost:5002';
+    const isCapacitor = String(w?.location?.protocol || '').startsWith('capacitor');
+    if ((isLocal || isLan) && !isCapacitor) {
+      // Returning empty base means fetch will use relative '/api/...', which Vite will proxy to the remote backend
+      apiBaseCache = '';
       return apiBaseCache;
     }
   } catch {}
-  // فضّل إعدادات وقت التشغيل (window.__CONFIG__ أو public/config.json) لاحقًا
+
+  // 2) Prefer runtime config (window.__CONFIG__ or public/config.json) for production or deployed environments
   try {
     const w = (typeof window !== 'undefined') ? (window as any) : {};
     const runtime = w.__CONFIG__ && w.__CONFIG__.API_BASE;
@@ -40,7 +43,6 @@ async function resolveApiBase(): Promise<string> {
       apiBaseCache = runtime.replace(/\/+$/, '');
       return apiBaseCache;
     }
-    // Attempt to fetch config.json once if not present
     if (typeof window !== 'undefined') {
       const resp = await fetch('/config.json', { cache: 'no-cache' });
       if (resp.ok) {
@@ -53,7 +55,8 @@ async function resolveApiBase(): Promise<string> {
       }
     }
   } catch {}
-  // Fallback to build-time env or localhost
+
+  // 3) Fallback to build-time env or localhost server
   const envBase = (import.meta as any).env?.VITE_SERVER_URL || 'http://localhost:4000';
   apiBaseCache = String(envBase).replace(/\/+$/, '');
   return apiBaseCache;
