@@ -660,8 +660,11 @@ const Header: React.FC<{ user: User | null; toggleRole: () => void; theme: 'ligh
           if (!authToken) { setAuthUser(null); return; }
           const me = await api.get('/me');
           setAuthUser(me.user);
+          // Persist the authenticated user payload so the app can map it to a real user record
+          try { localStorage.setItem('authUser', JSON.stringify(me.user || null)); } catch {}
         } catch {
           setAuthUser(null);
+          try { localStorage.removeItem('authUser'); } catch {}
         }
       }
       loadMe();
@@ -675,6 +678,8 @@ const Header: React.FC<{ user: User | null; toggleRole: () => void; theme: 'ligh
         try {
           localStorage.setItem('authToken', token);
           if (user && user.role) localStorage.setItem('authRole', String(user.role).toLowerCase());
+          // Persist the authenticated user payload (may contain id/name/role or username/role)
+          localStorage.setItem('authUser', JSON.stringify(user || null));
         } catch {}
         setAuthToken(token);
         setAuthUser(user);
@@ -688,7 +693,7 @@ const Header: React.FC<{ user: User | null; toggleRole: () => void; theme: 'ligh
 
     const handleLogout = async () => {
       try { await api.logout(); } catch {}
-      try { localStorage.removeItem('authToken'); localStorage.removeItem('authRole'); } catch {}
+      try { localStorage.removeItem('authToken'); localStorage.removeItem('authRole'); localStorage.removeItem('authUser'); } catch {}
       setAuthToken('');
       setAuthUser(null);
     };
@@ -1097,6 +1102,7 @@ export default function App() {
         const employees: User[] = (Array.isArray(usersRes) ? usersRes : usersRes?.results || usersRes || []).map((e: any) => ({
           id: Number(e.id ?? Date.now()),
           name: String(e.name || 'موظف'),
+          username: e.username ? String(e.username) : undefined,
           role: String(e.role).toLowerCase() === 'admin' ? UserRole.ADMIN : UserRole.EMPLOYEE,
           department: String(e.department || 'غير محدد'),
           phone: e.phone ? String(e.phone) : undefined,
@@ -1129,14 +1135,23 @@ export default function App() {
         }));
         setAttendance(attNormalized);
 
-        // اختر مستخدمًا افتراضيًا بناءً على الدور بعد المصادقة
+        // اختر المستخدم الحالي بالاعتماد على بيانات المصادقة (id/username) أولاً، ثم الدور كخيار أخير
         let desiredRole: UserRole | null = null;
+        let authUserSafe: any = null;
         try {
           const r = (localStorage.getItem('authRole') || '').toLowerCase();
           if (r === 'admin') desiredRole = UserRole.ADMIN;
           else if (r === 'employee') desiredRole = UserRole.EMPLOYEE;
+          const rawAuthUser = localStorage.getItem('authUser');
+          authUserSafe = rawAuthUser ? JSON.parse(rawAuthUser) : null;
         } catch {}
-        const defaultUser = (desiredRole ? employees.find(u => u.role === desiredRole) : employees.find(u => u.role === UserRole.EMPLOYEE))
+        const byId = authUserSafe?.id != null ? employees.find(u => u.id === Number(authUserSafe.id)) : null;
+        const byUsername = !byId && authUserSafe?.username ? employees.find(u => u.username === String(authUserSafe.username)) : null;
+        const byName = !byId && !byUsername && authUserSafe?.username ? employees.find(u => u.name === String(authUserSafe.username)) : null;
+        const defaultUser = byId
+          || byUsername
+          || byName
+          || (desiredRole ? employees.find(u => u.role === desiredRole) : employees.find(u => u.role === UserRole.EMPLOYEE))
           || employees.find(u => u.role === UserRole.ADMIN)
           || null;
         setCurrentUser(defaultUser);
@@ -1203,16 +1218,25 @@ export default function App() {
     fetchData();
   }, []);
 
-  // عند تغيّر حالة المصادقة أو قائمة المستخدمين، أعِد اختيار المستخدم الحالي وفق الدور المخزّن
+  // عند تغيّر حالة المصادقة أو قائمة المستخدمين، أعِد اختيار المستخدم الحالي بمطابقة authUser (id/username) أولاً ثم الدور
   useEffect(() => {
     if (!authPresent || !users.length) return;
     let desiredRole: UserRole | null = null;
+    let authUserSafe: any = null;
     try {
       const r = (localStorage.getItem('authRole') || '').toLowerCase();
       if (r === 'admin') desiredRole = UserRole.ADMIN;
       else if (r === 'employee') desiredRole = UserRole.EMPLOYEE;
+      const rawAuthUser = localStorage.getItem('authUser');
+      authUserSafe = rawAuthUser ? JSON.parse(rawAuthUser) : null;
     } catch {}
-    const nextUser = (desiredRole ? users.find(u => u.role === desiredRole) : users.find(u => u.role === UserRole.EMPLOYEE))
+    const byId = authUserSafe?.id != null ? users.find(u => u.id === Number(authUserSafe.id)) : null;
+    const byUsername = !byId && authUserSafe?.username ? users.find(u => u.username === String(authUserSafe.username)) : null;
+    const byName = !byId && !byUsername && authUserSafe?.username ? users.find(u => u.name === String(authUserSafe.username)) : null;
+    const nextUser = byId
+      || byUsername
+      || byName
+      || (desiredRole ? users.find(u => u.role === desiredRole) : users.find(u => u.role === UserRole.EMPLOYEE))
       || users.find(u => u.role === UserRole.ADMIN)
       || null;
     // تجنّب تعيين نفس المستخدم مراراً لتفادي تحديثات غير ضرورية
@@ -2067,6 +2091,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = (props) => {
           // Ensure we always have a unique numeric id even if backend returns null/undefined
           id: Number(res.id ?? Date.now()),
           name: res.name,
+          username: res.username || payload.username,
           role: (res.role === 'admin' ? UserRole.ADMIN : UserRole.EMPLOYEE),
           department: res.department || '',
           phone: res.phone || undefined,
