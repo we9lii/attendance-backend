@@ -23,11 +23,11 @@ try {
 // Config
 // Prefer platform-provided PORT (Render/Heroku/etc), fallback to SERVER_PORT or 4000
 const PORT = Number(process.env.PORT || process.env.SERVER_PORT || 4000);
-const EXTERNAL_API_BASE = process.env.EXTERNAL_API_BASE || 'http://qssun.dyndns.org:8085/personnel/api/';
-const AUTH_MODE = (process.env.AUTH_MODE || 'basic').toLowerCase(); // 'basic' | 'jwt'
-const API_USERNAME = process.env.API_USERNAME || '';
-const API_PASSWORD = process.env.API_PASSWORD || '';
-const API_JWT_TOKEN = process.env.API_JWT_TOKEN || '';
+let EXTERNAL_API_BASE = process.env.EXTERNAL_API_BASE || 'http://qssun.dyndns.org:8085/personnel/api/';
+let AUTH_MODE = (process.env.AUTH_MODE || 'basic').toLowerCase(); // 'basic' | 'jwt'
+let API_USERNAME = process.env.API_USERNAME || '';
+let API_PASSWORD = process.env.API_PASSWORD || '';
+let API_JWT_TOKEN = process.env.API_JWT_TOKEN || '';
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 // Allow disabling auth (JWT) completely via environment for deployments that don't need it
 const DISABLE_AUTH = ['1','true','yes','on'].includes(String(process.env.DISABLE_AUTH || '').toLowerCase());
@@ -162,7 +162,41 @@ async function initTables() {
 }
 
 // External API helper
-async function externalFetch(path) {
+async function obtainJwtToken(base, username, password) {
+  const root = String(base || EXTERNAL_API_BASE);
+  const creds = { username: String(username || API_USERNAME), password: String(password || API_PASSWORD) };
+  const candidates = [
+    'token/',
+    'api/token/',
+    'api-token-auth/',
+    'token-auth/',
+    'auth/jwt/create/',
+  ];
+  for (const p of candidates) {
+    try {
+      const url = new URL(p, root).toString();
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(creds),
+      });
+      const text = await res.text();
+      if (!res.ok) continue;
+      let token = '';
+      try {
+        const json = JSON.parse(text);
+        token = json?.token || json?.access || json?.jwt || '';
+      } catch {}
+      if (token) {
+        API_JWT_TOKEN = token;
+        return token;
+      }
+    } catch {}
+  }
+  throw new Error('Failed to obtain JWT token from external API');
+}
+
+async function externalFetch(path, method = 'GET') {
   const url = new URL(path, EXTERNAL_API_BASE).toString();
   const headers = { 'Accept': 'application/json' };
   if (AUTH_MODE === 'basic' && API_USERNAME && API_PASSWORD) {
@@ -171,8 +205,18 @@ async function externalFetch(path) {
   } else if (AUTH_MODE === 'jwt' && API_JWT_TOKEN) {
     headers['Authorization'] = `JWT ${API_JWT_TOKEN}`;
   }
+  try {
+    console.log('externalFetch', { url, AUTH_MODE, hasUser: !!API_USERNAME, hasPass: !!API_PASSWORD, hasToken: !!API_JWT_TOKEN });
+  } catch {}
 
-  const res = await fetch(url, { headers });
+  let res = await fetch(url, { method, headers });
+  if (!res.ok && res.status === 401 && AUTH_MODE === 'jwt' && (API_USERNAME || API_PASSWORD)) {
+    try {
+      await obtainJwtToken(EXTERNAL_API_BASE, API_USERNAME, API_PASSWORD);
+      headers['Authorization'] = `JWT ${API_JWT_TOKEN}`;
+      res = await fetch(url, { method, headers });
+    } catch {}
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`External API error ${res.status}: ${text}`);
@@ -247,7 +291,17 @@ if (allowedOrigins.length === 0) {
           req.originalUrl.startsWith('/api/health') ||
           // لا تحوّل طلبات الطلبات والدردشة، أبقها محلية وإلا ستفشل على الخادم البعيد
           req.originalUrl.startsWith('/api/requests') ||
-          req.originalUrl.startsWith('/api/chat')
+          req.originalUrl.startsWith('/api/chat') ||
+          // أبقِ تكامل البصمة والربط الخارجي محليًا حتى بدون قاعدة بيانات
+          req.originalUrl.startsWith('/api/test-fingerprint') ||
+          req.originalUrl.startsWith('/api/external-token') ||
+          req.originalUrl.startsWith('/api/external-config') ||
+          req.originalUrl.startsWith('/api/device-users') ||
+          req.originalUrl.startsWith('/api/device-test') ||
+          req.originalUrl.startsWith('/api/employees') ||
+          req.originalUrl.startsWith('/api/departments') ||
+          req.originalUrl.startsWith('/api/areas') ||
+          req.originalUrl.startsWith('/api/positions')
         );
         if (skipForward) {
           return next();
@@ -560,11 +614,16 @@ app.post('/api/test-fingerprint', async (req, res) => {
     const target = String(url || EXTERNAL_API_BASE);
     const mode = String(authMode || AUTH_MODE).toLowerCase();
     const headers = { 'Accept': 'application/json' };
-    if (mode === 'basic' && username && password) {
-      const basic = Buffer.from(`${username}:${password}`).toString('base64');
+    if (mode === 'basic' && (username || API_USERNAME) && (password || API_PASSWORD)) {
+      const u = String(username || API_USERNAME);
+      const p = String(password || API_PASSWORD);
+      const basic = Buffer.from(`${u}:${p}`).toString('base64');
       headers['Authorization'] = `Basic ${basic}`;
-    } else if (mode === 'jwt' && API_JWT_TOKEN) {
-      headers['Authorization'] = `JWT ${API_JWT_TOKEN}`;
+    } else if (mode === 'jwt') {
+      if (!API_JWT_TOKEN && (API_USERNAME || API_PASSWORD)) {
+        try { await obtainJwtToken(EXTERNAL_API_BASE, API_USERNAME, API_PASSWORD); } catch {}
+      }
+      if (API_JWT_TOKEN) headers['Authorization'] = `JWT ${API_JWT_TOKEN}`;
     }
     const resp = await fetch(target, { method: 'GET', headers });
     const ok = resp.ok;
@@ -604,6 +663,35 @@ app.post('/api/device-users', async (req, res) => {
   }
 });
 
+// Obtain and cache external JWT token (tries common endpoints)
+app.post('/api/external-token', async (req, res) => {
+  try {
+    const { url, username, password } = req.body || {};
+    const base = String(url || EXTERNAL_API_BASE);
+    const u = String(username || API_USERNAME);
+    const p = String(password || API_PASSWORD);
+    if (!u || !p) return res.status(400).json({ error: 'Missing username/password' });
+    const token = await obtainJwtToken(base, u, p);
+    res.json({ ok: true, token });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
+// Update external API runtime configuration
+app.post('/api/external-config', async (req, res) => {
+  try {
+    const { base, authMode, username, password, token } = req.body || {};
+    if (base) EXTERNAL_API_BASE = String(base);
+    if (authMode) AUTH_MODE = String(authMode).toLowerCase();
+    if (username != null) API_USERNAME = String(username);
+    if (password != null) API_PASSWORD = String(password);
+    if (token != null) API_JWT_TOKEN = String(token);
+    res.json({ ok: true, config: { base: EXTERNAL_API_BASE, authMode: AUTH_MODE, username: API_USERNAME, hasPassword: !!API_PASSWORD, hasToken: !!API_JWT_TOKEN } });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: String(e.message || e) });
+  }
+});
 // Test connectivity to a ZKTeco device (quick ping via users or attendances)
 // Accepts same params as /api/device-users; returns device reachability and counts
 app.post('/api/device-test', async (req, res) => {

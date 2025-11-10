@@ -12,7 +12,8 @@ export default defineConfig(({ mode }) => {
         proxy: {
           // Only proxy real API calls (paths starting with "/api/") and avoid intercepting module files like "/api.ts"
           '/api/': {
-            target: 'https://attendance-backend-u99p.onrender.com',
+            // During local development, proxy API calls to the local backend server
+            target: 'http://localhost:4000',
             changeOrigin: true,
             secure: false,
           }

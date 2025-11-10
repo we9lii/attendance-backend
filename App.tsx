@@ -1048,6 +1048,8 @@ export default function App() {
       try {
         localStorage.setItem('authToken', token);
         if (user && user.role) localStorage.setItem('authRole', String(user.role).toLowerCase());
+        // احفظ بيانات المستخدم المصادق حتى نستطيع مطابقتها لاحقاً
+        localStorage.setItem('authUser', JSON.stringify(user || null));
       } catch {}
       setAuthPresent(true);
     } catch (e: any) {
